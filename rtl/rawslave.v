@@ -12,6 +12,26 @@
 //	SPI SCK (clock) signal is up to 2x as fast as the system clock.  This
 //	leads to some difficult clock domain crossing issues, solved herein.
 //
+// Interface:
+//
+//	Upon receiving 8-bits from the MOSI pin on the SCK, the data will be
+//	transferred from the SPI clock domain to a surrounding system clock
+//	domain.  Once done, the o_we signal will go high, and o_byte will
+//	contain that byte.
+//
+//	The read interface remains a work in progress.  As currently written,
+//	any time the o_rd signal is high, the i_byte data bits will be accepted
+//	into the interface and sent next.  This has a couple of problems.
+//	First, there's no way to synchronize to the SPI frame.  Second, it
+//	requires a significant number of clocks at the SPI frequency from
+//	the time CSn becomes inactive until it becomes active again.  Only 4
+//	SPI clock periods (no SPI SCK would be active during these periods)
+//	are required between CSN active and CSN active if the SPI frequency
+//	is less than the system clock frequency, or 13 clocks for a SPI clock
+//	frequency up to twice the system clock frequency.
+//
+//	This piece needs more work.
+//
 // Creator:	Dan Gisselquist, Ph.D.
 //		Gisselquist Technology, LLC
 //
