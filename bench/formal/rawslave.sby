@@ -1,0 +1,21 @@
+[tasks]
+prf
+cvr
+
+[options]
+prf: mode prove
+prf: depth 120
+cvr: mode cover
+cvr: depth 120
+
+multiclock on
+
+[engines]
+smtbmc
+
+[script]
+read -formal rawslave.v
+prep -top rawslave
+
+[files]
+../../rtl/rawslave.v
