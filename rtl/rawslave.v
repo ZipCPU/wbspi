@@ -67,7 +67,7 @@
 //
 module rawslave(i_clk, i_reset,
 	i_spi_csn, i_spi_sck, i_spi_mosi, o_spi_miso,
-	o_we, o_byte, o_rd, i_byte);
+	o_frame, o_we, o_byte, o_rd, i_byte);
 	localparam	NFF = 2; // FF's in synchronizer set
 	//
 	input	wire	i_clk, i_reset;
@@ -78,6 +78,7 @@ module rawslave(i_clk, i_reset,
 	input	wire	i_spi_sck, i_spi_mosi;
 	output	wire	o_spi_miso;
 	//
+	output	reg		o_frame;
 	output	reg		o_we;
 	output	reg	[7:0]	o_byte;
 	output	reg		o_rd;
@@ -117,6 +118,13 @@ module rawslave(i_clk, i_reset,
 	else if ((spi_bitcount[2:0] >= 3'h3)&&(spi_bitcount[2:0] < 3'h7))
 		xck_stb <= 1'b0;
 
+	initial	spi_frame = 1;
+	always @(posedge i_spi_sck, posedge i_spi_csn)
+	if (i_spi_csn)
+		spi_frame <= 1;
+	else if (spi_bitcount > 3)
+		spi_frame <= 0;
+
 	//
 	// Negative edge of the clock
 	//
@@ -135,19 +143,17 @@ module rawslave(i_clk, i_reset,
 	else
 		spi_rdstb <= (spi_bitcount_n[2:0] == 3'h7);
 
-	initial	spi_rdreq = 1;
-	always @(negedge i_spi_sck, posedge i_spi_csn)
-	if (i_spi_csn)
-		spi_rdreq <= 1;
-	else if (spi_rdstb)
+	initial	spi_rdreq = 0;
+	always @(negedge i_spi_sck)
+	if (spi_bitcount_n < 3'h4)
 		spi_rdreq <= 1;
 	else
-		spi_rdreq <= (spi_bitcount_n[2:0] <= 3'h3);
+		spi_rdreq <= 0;
 
 
 	// Output data can only change on the negative edge of the clock
 	initial	spi_output = 0;
-	always @(negedge i_spi_sck)
+	always @(negedge i_spi_sck, posedge i_spi_csn)
 	if (spi_rdstb)
 		spi_output <= xck_oreg;
 	else
@@ -157,8 +163,8 @@ module rawslave(i_clk, i_reset,
 	//
 	// System clock domain
 	//
-	reg			sync_spi_rd, sync_spi_stb;
-	reg	[NFF-1:0]	sync_rd_pipe, sync_stb_pipe;
+	reg			sync_spi_rd, sync_spi_stb, sync_spi_frame;
+	reg	[NFF-1:0]	sync_rd_pipe, sync_stb_pipe, sync_frame_pipe;
 	reg			pre_stb;
 
 	//
@@ -186,6 +192,25 @@ module rawslave(i_clk, i_reset,
 			<= { sync_stb_pipe, xck_stb };
 		pre_stb <= sync_stb_pipe[1] && !sync_spi_stb;
 	end
+
+	initial { sync_spi_frame, sync_frame_pipe } = -1;
+	always @(posedge i_clk)
+	if (i_reset)
+	begin
+		{ sync_spi_frame, sync_frame_pipe } <= -1;
+	end else begin
+		{ sync_spi_frame, sync_frame_pipe }
+			<= { sync_frame_pipe, spi_frame };
+	end
+
+	initial o_frame = 1'b1;
+	always @(posedge i_clk)
+	if (i_reset)
+		o_frame <= 1'b1;
+	else if (!sync_spi_frame && sync_frame_pipe[NFF-1])
+		o_frame <= 1;
+	else if (o_rd)
+		o_frame <= 0;
 
 	//
 	initial	o_we = 0;
