@@ -4,9 +4,9 @@ cvr
 
 [options]
 prf: mode prove
-prf: depth 120
+prf: depth 98
 cvr: mode cover
-cvr: depth 120
+cvr: depth 240
 
 multiclock on
 

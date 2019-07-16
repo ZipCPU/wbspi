@@ -1,17 +1,17 @@
 [*]
-[*] GTKWave Analyzer v3.3.66 (w)1999-2015 BSI
-[*] Thu Jul  4 17:17:50 2019
+[*] GTKWave Analyzer v3.3.86 (w)1999-2017 BSI
+[*] Sat Jul 13 09:29:37 2019
 [*]
-[dumpfile] "/home/dan/work/rnd/opencores/wbspi/trunk/bench/formal/rawslave_cvr/engine_0/trace0.vcd"
-[dumpfile_mtime] "Thu Jul  4 17:16:39 2019"
-[dumpfile_size] 8815
-[savefile] "/home/dan/work/rnd/opencores/wbspi/trunk/bench/formal/rawslave.gtkw"
+[dumpfile] "/home/dan/bizcopy/wbspi/bench/formal/rawslave_cvr/engine_0/trace10.vcd"
+[dumpfile_mtime] "Wed Jul 10 20:26:47 2019"
+[dumpfile_size] 37231
+[savefile] "/home/dan/bizcopy/wbspi/bench/formal/rawslave.gtkw"
 [timestart] 0
-[size] 1466 866
-[pos] -467 -1
-*-5.957687 20 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
-[sst_width] 196
-[signals_width] 190
+[size] 1918 866
+[pos] -453 -1
+*-6.957687 270 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[sst_width] 270
+[signals_width] 220
 [sst_expanded] 1
 [sst_vpaned_height] 248
 @28
@@ -21,7 +21,7 @@ rawslave.f_past_valid_spi
 rawslave.i_reset_clk
 @200
 -
-@29
+@28
 [color] 3
 rawslave.i_clk
 [color] 3
@@ -30,10 +30,16 @@ rawslave.i_reset
 -
 @28
 [color] 2
-rawslave.o_stb
+rawslave.o_frame
+[color] 2
+rawslave.o_rd
 @22
 [color] 3
 rawslave.i_byte[7:0]
+@28
+[color] 2
+rawslave.o_we
+@22
 [color] 2
 rawslave.o_byte[7:0]
 @200
@@ -55,35 +61,34 @@ rawslave.f_clkd_while_idle
 rawslave.f_fault
 rawslave.f_past_csn
 rawslave.f_past_sck
-rawslave.f_spick_counter[2:0]
-rawslave.f_spick_step[2:0]
-rawslave.f_sysck_counter[2:0]
-rawslave.f_sysck_step[2:0]
 rawslave.pre_stb
 @200
 -
 @28
 rawslave.spi_bitcount[2:0]
-rawslave.spi_bitcount_n[2:0]
 @22
 rawslave.spi_byte[7:0]
 rawslave.spi_output[7:0]
-@28
-rawslave.spi_rdstb
-@22
 rawslave.spi_sreg[6:0]
 @28
-rawslave.sync_csn_pipe[1:0]
-rawslave.sync_spi_csn
 rawslave.sync_spi_stb
 rawslave.sync_stb_pipe[1:0]
 @22
 rawslave.xck_oreg[7:0]
 @28
 rawslave.xck_stb
+@22
+rawslave.f_txseq[7:0]
+@28
+rawslave.f_bytes_rcvd[2:0]
+rawslave.f_bytes_sent[2:0]
+@201
+-
+@28
+rawslave.f_cvrspd_slow
+rawslave.f_cvrspd_equal
+rawslave.f_cvrspd_fast
 @200
 -
-@22
-rawslave.rxseq[9:0]
 [pattern_trace] 1
 [pattern_trace] 0
