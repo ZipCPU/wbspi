@@ -33,7 +33,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Copyright (C) 2019, Gisselquist Technology, LLC
+// Copyright (C) 2019-2020, Gisselquist Technology, LLC
 //
 // This program is free software (firmware): you can redistribute it and/or
 // modify it under the terms of the GNU General Public License as published
@@ -472,10 +472,6 @@ module rawslave(i_clk, i_reset,
 	default: assert(0);
 	endcase
 `endif
-	reg	i_reset_clk;
-	initial	i_reset_clk = 1'b1;
-	always @(posedge i_clk)
-		i_reset_clk <= i_reset;
 
 	always @(posedge gbl_clk)
 	if (f_past_valid_gbl && spi_bitcount_n[2:0] == 3'h7)
@@ -748,9 +744,10 @@ module rawslave(i_clk, i_reset,
 	if ($rose(i_spi_sck))
 		assert(spi_bitcount == spi_bitcount_n[2:0]);
 
-	always @(posedge gbl_clk)
-	if (f_past_valid_gbl && $fell(i_spi_csn))
-		assert(sync_spi_rd[0] == sync_spi_rd[1]);
+// sync_spi_rd is not a vector
+//	always @(posedge gbl_clk)
+//	if (f_past_valid_gbl && $fell(i_spi_csn))
+//		assert(sync_spi_rd[0] == sync_spi_rd[1]);
 
 	always @(*)
 	if (spi_bitcount_n[2:0] == 3'h7)
