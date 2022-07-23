@@ -31,15 +31,13 @@
 //
 // Commands:	All instructions are 8-bits.  Many support immediates following.
 // {{{
-//	0001111 STOP		Raise all CSn pins to deactivate the interface.
+//	00011111 STOP		Raise all CSn pins to deactivate the interface.
 //				STOP commands may also be implied by other
 //				commands.
-//	000iiii	START ID	Drop CSn[iii] to activate (implies STOP for
-//				anything that's active.)  If we are only
+//	000iiiii START ID	Drop CSn[iii] to activate (implies STOP for
+//				anything else that's active.)  If we are only
 //				configured for a single CSN, then any START
 //				command will activate (lower) that CSN.
-//				START[1] will raise CSN[1] before lowering it
-//				if it is already active
 //	001nmbr	READ #NMBR	Read #NMBR+1 bytes.  No immediates follow.
 //				#NMBR ranges from 0--15, for a READ of 1--16
 //				bytes.  Data will be read from the selected CSN.
@@ -84,7 +82,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 // }}}
-// Copyright (C) 2019-2022, Gisselquist Technology, LLC
+// Copyright (C) 2022, Gisselquist Technology, LLC
 // {{{
 // This program is free software (firmware): you can redistribute it and/or
 // modify it under the terms of the GNU General Public License as published
@@ -128,8 +126,16 @@ module	spicpu #(
 		// Verilator lint_on  UNUSED
 		parameter [0:0]	 OPT_LOWPOWER = 0,
 		parameter [0:0]	 OPT_START_HALTED= 0,
+		parameter [0:0]	 OPT_SHARED_MISO = 0,
 		parameter [0:0]	 DEF_CPOL = 1,
-		parameter [11:0] DEF_CKCOUNT = 100	// Divide clk by 100
+		// DEF_CKCOUNT -- Default number of system clocks per SCK
+		// {{{
+		// This number gets divided by two, so *DON'T* set it to
+		// anything less than 2.
+		parameter [11:0] DEF_CKCOUNT = 20	// Divide clk by 20
+		// Dividing by 20 should yield a clock rate of SYSCLK/20
+		//   or 100MHz / 20 = 5MHz
+		// }}}
 		// }}}
 	) (
 		// {{{
@@ -160,7 +166,7 @@ module	spicpu #(
 		output	reg	[NCE-1:0]	o_spi_csn,
 		output	reg			o_spi_sck,
 		output	reg			o_spi_mosi,
-		input	wire	[NCE-1:0]	i_spi_miso,
+		input	wire [(OPT_SHARED_MISO ? 0:(NCE-1)):0]	i_spi_miso,
 		// }}}
 		// Outgoing AXI-Stream interface
 		// {{{
@@ -179,8 +185,18 @@ module	spicpu #(
 				ADR_OVERRIDE = 2'b01,
 				ADR_ADDRESS  = 2'b10,
 				ADR_CKCOUNT  = 2'b11;
+
 	localparam		BAW = ADDRESS_WIDTH
 					+ $clog2(DATA_WIDTH/8); // Byte addr wid
+
+	localparam	[2:0]	CMD_START  = 3'h0, // CMD_STOP = 3'h0,
+				CMD_READ   = 3'h1, CMD_SEND  = 3'h2,
+				CMD_TXRX   = 3'h3,
+				CMD_LAST   = 3'h4;
+				// CMD_NOOP   = 3'h7;
+	localparam	[3:0]	CMD_HALT   = 4'ha, CMD_WAIT  = 4'hb,
+				CMD_TARGET = 4'hc,
+				CMD_JUMP   = 4'hd;
 
 	wire		bus_write, bus_read, bus_jump, bus_override, bus_manual;
 	wire	[1:0]	bus_write_addr, bus_read_addr;
@@ -207,7 +223,7 @@ module	spicpu #(
 	reg	[9:0]		dcd_command;
 
 	reg			imm_cycle;
-	reg	[4:0]		imm_count;
+	reg	[5:0]		imm_count;
 
 
 	wire			pf_valid, pf_ready, pf_illegal;
@@ -222,6 +238,8 @@ module	spicpu #(
 	reg		spi_active, spi_last, spi_keep;
 	reg	[6:0]	spi_srout, spi_srin;
 	reg	[4:0]	spi_count;
+
+	wire		miso;
 
 	wire	set_tvalid;
 
@@ -261,7 +279,7 @@ module	spicpu #(
 		ADR_CONTROL:  begin end
 		ADR_OVERRIDE: o_wb_data <= { ovw_data, manual_data, ovw_cmd };
 		ADR_ADDRESS:  o_wb_data[BAW-1:0] <= pf_insn_addr;
-		ADR_CKCOUNT:  begin end
+		ADR_CKCOUNT:  o_wb_data[11:1] <= ckcount;
 		default: begin end
 		endcase
 
@@ -408,7 +426,6 @@ module	spicpu #(
 		&& (next_cpu || (!r_stopped && (!r_wait || i_sync_signal)));
 	assign	dcd_ready = !spi_stall;
 
-
 	// cpu_new_pc, pf_jump_addr
 	// {{{
 	always @(posedge i_clk)
@@ -418,13 +435,13 @@ module	spicpu #(
 		if (bus_jump)
 			cpu_new_pc <= 1'b1;
 		if (next_valid && next_ready
-				&& !imm_cycle && next_insn[7:4] == 4'hd)
+				&& !imm_cycle && next_insn[7:4] == CMD_JUMP)
 			cpu_new_pc <= 1'b1;
 
 		// pf_jump_addr
 		// {{{
 		if (next_valid && next_ready
-				&& !imm_cycle && next_insn[7:4] == 4'hc)
+				&& !imm_cycle && next_insn[7:4] == CMD_TARGET)
 			pf_jump_addr <= next_insn_addr + 1;	// TARGET
 		if (bus_jump)
 			pf_jump_addr <= bus_write_data[BAW-1:0];
@@ -443,7 +460,7 @@ module	spicpu #(
 	always @(posedge i_clk)
 	begin
 		if (next_valid && next_ready
-					&& !imm_cycle && next_insn[7:4] == 4'ha)
+				&& !imm_cycle && next_insn[7:4] == CMD_HALT)
 			r_stopped <= 1'b1;
 		if (next_valid && next_ready && next_cpu)
 			r_stopped <= 1'b1;
@@ -465,7 +482,7 @@ module	spicpu #(
 			r_wait <= 1'b0;
 
 		if (next_valid && next_ready && !imm_cycle
-						&& next_insn[7:4] == 4'hb)
+						&& next_insn[7:4] == CMD_WAIT)
 			r_wait <= 1'b1;
 		if ((!imm_cycle || dcd_send)&&next_valid&& next_illegal)
 			r_wait <= 1'b0;
@@ -512,7 +529,7 @@ module	spicpu #(
 				begin // SEND #
 					// {{{
 					dcd_command[9:0] <= { 1'b0,
-						dcd_keep, pf_insn[7:0] };
+						dcd_keep, next_insn[7:0] };
 					imm_count <= imm_count - 1;
 					imm_cycle <= (imm_count > 1);
 					if (!dcd_keep || imm_count == 1)
@@ -526,8 +543,8 @@ module	spicpu #(
 					// }}}
 				end
 				// }}}
-			end else if (next_valid) casez(pf_insn[7:4])
-			4'b000?: begin // START #ID
+			end else if (next_valid) casez(next_insn[7:4])
+			{ CMD_START, 1'b? }: begin // START #ID
 				// {{{
 				dcd_valid <= 1'b1;
 				dcd_byte  <= 1'b0;
@@ -545,21 +562,21 @@ module	spicpu #(
 					dcd_active <= 1'b1;
 				end end
 				// }}}
-			4'b001?: begin // READ #NMBR
+			{ CMD_READ,  1'b? }: begin // READ #NMBR
 				// {{{
 				dcd_valid <= 1'b1;
 				dcd_byte  <= 1'b1;
 				dcd_send  <= 1'b0; // Not sending data
 				dcd_keep  <= 1'b1; // but we are keeping results
-				imm_cycle <= 1'b1;
-				imm_count <= next_insn[4:0]; // Remaining items
+				imm_cycle <= (next_insn[4:0] > 0);
+				imm_count <= { 1'b0, next_insn[4:0] }; // Remaining items
 				dcd_last  <= dcd_last && (next_insn[4:0] > 0);
 				dcd_command[9:0] <= {
 					(dcd_last && (next_insn[4:0] == 5'h0)),
 					1'b1, 8'h0 };
 				end
 				// }}}
-			4'b010?: begin // SEND #NMBR
+			{ CMD_SEND,  1'b? }: begin // SEND #NMBR
 				// {{{
 				dcd_valid <= 1'b0; // No data(yet), so not valid
 				dcd_send  <= 1'b1; // Sending data
@@ -571,7 +588,7 @@ module	spicpu #(
 				imm_count <= next_insn[4:0] + 1; // items
 				end
 				// }}}
-			4'b011?: begin // TXRX #NMBR
+			{ CMD_TXRX,  1'b? }: begin // TXRX #NMBR
 				// {{{
 				dcd_valid <= 1'b0; // No data(yet) to send
 				dcd_send  <= 1'b1; // We're sending data
@@ -582,8 +599,9 @@ module	spicpu #(
 				imm_count <= next_insn[4:0] + 1;
 				end
 			// }}}
-			4'b100?: { dcd_valid, dcd_last } <= 2'b01; // LAST insn
-			4'b101?: begin	// WAIT, HALT
+			{ CMD_LAST,  1'b? }:
+				{ dcd_valid, dcd_last } <= 2'b01; // LAST insn
+			CMD_HALT, CMD_WAIT: begin	// WAIT, HALT
 				// {{{
 				dcd_valid  <= (dcd_active);
 				dcd_csn    <= -1;
@@ -599,7 +617,7 @@ module	spicpu #(
 					dcd_stop   <= 1'b1;
 				end end
 				// }}}
-			4'b1100: begin // TARGET
+			CMD_TARGET: begin // TARGET
 				// {{{
 				dcd_valid  <= (dcd_active);
 				pf_jump_addr <= next_insn_addr + 1; // TARGET
@@ -614,7 +632,7 @@ module	spicpu #(
 					dcd_stop   <= 1'b1;
 				end end
 				// }}}
-			4'b1101: begin // JUMP
+			CMD_JUMP:   begin // JUMP
 				// {{{
 				dcd_valid  <= (dcd_active);
 				dcd_csn    <= -1;
@@ -853,6 +871,13 @@ module	spicpu #(
 	end
 	// }}}
 
+	generate if (OPT_SHARED_MISO)
+	begin : GEN_SHARED_MISO
+		assign	miso = i_spi_miso;
+	end else begin : MISO_SELECT
+		assign	miso = |(i_spi_miso & ~o_spi_csn);
+	end endgenerate
+
 	// spi_srin -- incoming shift register
 	// {{{
 	always @(posedge i_clk)
@@ -861,7 +886,7 @@ module	spicpu #(
 	else if (OPT_LOWPOWER && dcd_valid && !spi_stall)
 		spi_srin <= 0;
 	else if (spi_ckedge && !(o_spi_sck ^ DEF_CPOL))
-		spi_srin <= { spi_srin[5:0], |(i_spi_miso & ~o_spi_csn) };
+		spi_srin <= { spi_srin[5:0], miso };
 	// }}}
 
 	// spi_count -- a bit counter, not to be confused with the edge counter
@@ -907,9 +932,8 @@ module	spicpu #(
 	begin
 		if (!OPT_LOWPOWER || set_tvalid)
 		begin
-			M_AXIS_TDATA <= { spi_srin, |(i_spi_miso & ~o_spi_csn)};
-			ovw_data <= { ovw_data[7:0],
-				{ spi_srin, |(i_spi_miso && ~o_spi_csn) }};
+			M_AXIS_TDATA <= { spi_srin, miso };
+			ovw_data <= { ovw_data[7:0], spi_srin, miso };
 		end else if (OPT_LOWPOWER)
 			M_AXIS_TDATA <= 8'b0;
 	end
