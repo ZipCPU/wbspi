@@ -35,9 +35,15 @@
 ################################################################################
 ##
 ##
-.PHONY: rawslave
+.PHONY: all
+all: rawslave
+
 rawslave: rawslave_prf/PASS rawslave_cvr/PASS
-rawslave_prf/PASS: ../../rtl/rawslave.v
+rawslave_prf/PASS: rawslave.sby ../../rtl/rawslave.v
 	sby -f rawslave.sby prf
-rawslave_cvr/PASS: ../../rtl/rawslave.v
-	sby -f rawslave.sby
+rawslave_cvr/PASS: rawslave.sby ../../rtl/rawslave.v
+	sby -f rawslave.sby cvr
+
+.PHONY: clean
+clean:
+	rm -rf rawslave_*/

@@ -22,7 +22,5 @@ core itself.
 
 ## License
 
-The core as written is licensed under GPL.  My eventual goal is to provide a
-more LGPL-type license that's more appropriate to hardware, but I'm still
-looking for such.  Feel free to contact me and let me know if this license
-is not sufficient for you and we can discuss other options.
+The core as written is licensed under GPL.  Feel free to contact me if this
+license is not sufficient for your needs and we can discuss other options.

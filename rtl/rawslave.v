@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
 // Filename: 	rawslave.v
-//
+// {{{
 // Project:	wbspi, a set of Serial Peripheral Interface  cores
 //
 // Purpose:	This design implements a raw SPI slave.  Typically, were I to
@@ -32,9 +32,9 @@
 //		Gisselquist Technology, LLC
 //
 ////////////////////////////////////////////////////////////////////////////////
-//
-// Copyright (C) 2019-2020, Gisselquist Technology, LLC
-//
+// }}}
+// Copyright (C) 2019-2022, Gisselquist Technology, LLC
+// {{{
 // This program is free software (firmware): you can redistribute it and/or
 // modify it under the terms of the GNU General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
@@ -60,83 +60,109 @@
 
 `default_nettype	none
 //
-//
-module rawslave(i_clk, i_reset,
-	i_spi_csn, i_spi_sck, i_spi_mosi, o_spi_miso,
-	o_frame, o_we, o_byte, o_rd, i_byte);
-	localparam	NFF = 2; // FF's in synchronizer set
-	//
-	input	wire	i_clk, i_reset;
-	//
-	// Verilator lint_off SYNCASYNCNET
-	input	wire	i_spi_csn;
-	// Verilator lint_on  SYNCASYNCNET
-	input	wire	i_spi_sck, i_spi_mosi;
-	output	wire	o_spi_miso;
-	//
-	output	reg		o_frame;
-	output	reg		o_we;
-	output	reg	[7:0]	o_byte;
-	output	reg		o_rd;
-	input	reg	[7:0]	i_byte;
+// }}}
+module rawslave #(
+		// {{{
+		// Default to a 2-clock synchronizer FF chain
+		localparam	NFF = 2 // FF's in synchronizer set
+		// }}}
+	) (
+		// {{{
+		input	wire		i_clk, i_reset,
+		//
+		// Verilator lint_off SYNCASYNCNET
+		input	wire		i_spi_csn,
+		// Verilator lint_on  SYNCASYNCNET
+		input	wire		i_spi_sck, i_spi_mosi,
+		output	wire		o_spi_miso,
+		//
+		output	reg		o_frame,
+		output	reg		o_we,
+		output	reg	[7:0]	o_byte,
+		output	wire		o_rd,
+		input	reg	[7:0]	i_byte
+		// }}}
+	);
 
 	////////////////////////////////////////////////////////////////////////
 	//
 	// SPI clock domain
+	// {{{
+	////////////////////////////////////////////////////////////////////////
 	//
-	reg	[2:0]	spi_bitcount;
-	reg	[3:0]	spi_bitcount_n;
+	//
+
+	// Registers used in the SPI clock domain
+	// {{{
+	reg	[2:0]	spi_bitcount, spi_bitcount_n;
 	reg		spi_rdreq, spi_frame;
 	reg	[7:0]	spi_byte, xck_oreg;
 	reg	[6:0]	spi_sreg;
 	reg		xck_stb;
 	reg	[7:0]	spi_output;
+	// }}}
 
-	initial	spi_bitcount = 3;
+	// spi_bitcount
+	// {{{
+	initial	spi_bitcount = 0;
 	always @(posedge i_spi_sck, posedge i_spi_csn)
 	if (i_spi_csn)
 		spi_bitcount <= 0;
 	else
 		spi_bitcount <= spi_bitcount + 1;
+	// }}}
 
+	// MOSI -> spi_sreg - the SPI bit-wise shift register
+	// {{{
 	always @(posedge i_spi_sck)
-	if (!i_spi_csn)
 		spi_sreg <= { spi_sreg[5:0], i_spi_mosi };
+	// }}}
 
+	// { sreg, MOSI } -> spi_byte at the end of each byte
+	// {{{
 	always @(posedge i_spi_sck)
 	if (!i_spi_csn && spi_bitcount[2:0] == 3'b111)
 		spi_byte <= { spi_sreg[6:0], i_spi_mosi };
+	// }}}
 
-
+	// xck_stb - the cross clock strobe indicating we have a byte available
+	// {{{
 	initial	xck_stb = 0;
 	always @(posedge i_spi_sck)
 	if (spi_bitcount[2:0] == 3'h7)
 		xck_stb <= 1'b1;
 	else if ((spi_bitcount[2:0] >= 3'h3)&&(spi_bitcount[2:0] < 3'h7))
 		xck_stb <= 1'b0;
+	// }}}
 
 	//
 	// Negative edge of the clock
 	//
 	// This is where the master reads from the SPI port
 	//
+
+	// spi_bitcount_n - bit counting on the negative edge of the clock
+	// {{{
 	initial	spi_bitcount_n = 0;
 	always @(negedge i_spi_sck, posedge i_spi_csn)
 	if (i_spi_csn)
 		spi_bitcount_n <= 0;
-	else if (!spi_bitcount_n[3])
-		spi_bitcount_n <= spi_bitcount_n + 1;
 	else
-		spi_bitcount_n[2:0] <= spi_bitcount_n[2:0] + 1;
+		spi_bitcount_n <= spi_bitcount_n + 1;
+	// }}}
 
+	// spi_rdreq - requesting a read from the other clock domain
+	// {{{
 	initial	spi_rdreq = 0;
 	always @(negedge i_spi_sck)
 	if (spi_bitcount_n[2:0] < 3'h4)
-		spi_rdreq <= 1;
+		spi_rdreq <= !i_spi_csn;
 	else
 		spi_rdreq <= 0;
+	// }}}
 
-
+	// spi_output
+	// {{{
 	// Output data can only change on the negative edge of the clock
 	initial	spi_output = 0;
 	always @(negedge i_spi_sck, posedge i_spi_csn)
@@ -146,104 +172,128 @@ module rawslave(i_clk, i_reset,
 		spi_output <= xck_oreg;
 	else
 		spi_output <= spi_output << 1;
+	// }}}
 
+	// MISO
+	// {{{
+	// We might want if (CSN) 1'bz else spi_output[7].  However, few
+	// synthesizers can handle 'zs within a design, and most 'z definitions
+	// require special output control.  Therefore we'll leave 'z handling
+	// for the top-level.  This does create a risk that the 'z I/O handling
+	// won't be fast enough, since it isn't properly registered.  May need
+	// to come back to this later.
+	assign	o_spi_miso = spi_output[7];
+	// }}}
+
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
 	// System clock domain
+	// {{{
+	////////////////////////////////////////////////////////////////////////
 	//
-	reg			sync_spi_rd, sync_spi_stb, sync_spi_frame;
-	reg	[NFF-1:0]	sync_rd_pipe, sync_stb_pipe, sync_frame_pipe;
-	reg			pre_stb;
+	//
 
-	//
-	// Clock synchronizers
-	initial { sync_spi_rd, sync_rd_pipe } = 0;
+	// Registers used in the system clock domain
+	// {{{
+	reg		last_spi_rd, last_spi_stb;
+	reg		sync_spi_rd, sync_spi_stb, sync_spi_frame;
+	reg		sync_rd_pipe, sync_stb_pipe, sync_frame_pipe;
+	wire		pre_stb;
+	// }}}
+
+	// last_spi_rd, sync_spi_rd, sync_rd_pipe -- clock synchronizers
+	// {{{
+	initial { last_spi_rd, sync_spi_rd, sync_rd_pipe } = 0;
 	always @(posedge i_clk)
 	if (i_reset)
-		{ sync_spi_rd, sync_rd_pipe } <= { 1'b0, {(NFF){1'b0}} };
-	else begin
-		{ sync_spi_rd, sync_rd_pipe }
-			<= { sync_rd_pipe[NFF-1:0], spi_rdreq&&!i_spi_csn };
-	end
+		{ last_spi_rd, sync_spi_rd, sync_rd_pipe } <= 3'h0;
+	else
+		{ last_spi_rd, sync_spi_rd, sync_rd_pipe } <= { sync_spi_rd,
+				sync_rd_pipe, spi_rdreq&&!i_spi_csn };
+	// }}}
 
-	always @(*)
-		o_rd = !sync_spi_rd && sync_rd_pipe[NFF-1];
+	// o_rd
+	// {{{
+	assign	o_rd = !last_spi_rd && sync_spi_rd;
+	// }}}
 
-	//
-	//
-	initial	pre_stb = 0;
-	initial { sync_spi_stb, sync_stb_pipe } = -1;
-	always @(posedge i_clk)
-	if (i_reset)
-	begin
-		{ sync_spi_stb, sync_stb_pipe } <= -1;
-		pre_stb <= 1'b0;
-	end else begin
-		{ sync_spi_stb, sync_stb_pipe }
-			<= { sync_stb_pipe, xck_stb };
-		pre_stb <= sync_stb_pipe[NFF-1] && !sync_spi_stb;
-	end
-
+	// { sync_spi_frame, sync_frame_pipe } - frame synchronization
+	// {{{
 	initial { sync_spi_frame, sync_frame_pipe } = -1;
 	always @(posedge i_clk)
 	if (i_reset)
-	begin
 		{ sync_spi_frame, sync_frame_pipe } <= -1;
-	end else begin
+	else
 		{ sync_spi_frame, sync_frame_pipe }
 			<= { sync_frame_pipe, i_spi_csn };
-	end
+	// }}}
 
+	// o_frame
+	// {{{
 	initial o_frame = 1'b1;
 	always @(posedge i_clk)
 	if (i_reset)
 		o_frame <= 1'b1;
 	else if (o_rd)
 		o_frame <= 0;
-	else if (!sync_spi_frame && sync_frame_pipe[NFF-1])
+	else if (sync_spi_frame)
 		o_frame <= 1;
+	// }}}
 
-	//
+	// xck_oreg -- Byte-wise data headed back to the master
+	// {{{
+	assign	xck_oreg = i_byte;
+	// }}}
+
+	// { last_spi_stb, sync_spi_stb, sync_stb_pipe } from xck_stb
+	// {{{
+	initial { last_spi_stb, sync_spi_stb, sync_stb_pipe } = -1;
+	always @(posedge i_clk)
+	if (i_reset)
+		{ last_spi_stb, sync_spi_stb, sync_stb_pipe } <= -1;
+	else
+		{ last_spi_stb, sync_spi_stb, sync_stb_pipe }
+			<= { sync_spi_stb, sync_stb_pipe, xck_stb };
+
+	assign	pre_stb = !last_spi_stb && sync_spi_stb;
+	// }}}
+
+	// o_we
+	// {{{
 	initial	o_we = 0;
 	always @(posedge i_clk)
 		o_we <= pre_stb && !i_reset;
+	// }}}
 
+	// o_byte
+	// {{{
 	always @(posedge i_clk)
 	if (pre_stb)
 		o_byte <= spi_byte;
+	// }}}
 
-	//
-	// oreg -- The output data register
-	//
-	always @(*)
-		xck_oreg = i_byte;
-
-	////////////////////////////////////////////////////////////////////////
-	assign	o_spi_miso = spi_output[7]; // (!i_spi_csn) ? spi_output[7] : 1'bz;
-
+	// }}}
+	// Make verilator happy
+	// {{{
+	// Verilator lint_off UNUSED
+	wire	unused;
+	assign	unused = &{ 1'b0 }; // Not currently needed
+	// Verilator lint_on  UNUSED
+	// }}}
+//////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-//////
-//////	Formal properties
-//////
+//
+// Formal properties
+// {{{
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 `ifdef	FORMAL
+	// Formal related register/net/param declarations
+	// {{{
 	localparam	F_CKBITS=5;
-	localparam	F_CK_MIN_CSN_TO_CSN   = 4'h8;
-	localparam	F_CK_MIN_CSN_RECOVERY = 4'h3;
-	localparam	F_CK_MIN_CSN_ACTIVE   = 4'h2;
-
-
-	////////////////////////////////////////////////////////////////////////
-	//
-	//	Generate some (assumed) clocking signals
-	//
-	////////////////////////////////////////////////////////////////////////
-	//
-	//
 	(* anyconst *)	reg [F_CKBITS-1:0]	f_sysck_step,
 						f_spick_step;
 	reg [F_CKBITS-1:0]	f_sysck_counter, f_sysck_next,
@@ -252,6 +302,29 @@ module rawslave(i_clk, i_reset,
 				f_will_fall_sck;
 
 	(* gclk *)	reg	gbl_clk;
+	reg	f_past_valid_gbl, f_past_valid_spi, f_past_valid_clk;
+	reg		f_past_csn, f_past_sck; //, f_clkd_while_idle;
+	wire		f_active, f_fault;
+	reg	[3:0]	f_csn_hi_count, f_csn_to_csn_count,
+			f_csn_lo_count;
+	reg		last_spi_frame;
+	reg	[8:0]	f_rxseq;
+	reg	[3:0]	f_rxcdc;
+	reg	[7:0]	f_data, f_rcvd;
+	wire	[2:0]	f_sync_frame;
+	reg		f_pending_rdstb;
+	reg	[7:0]	f_txmit, f_txseq;
+	reg		f_pending_wrstb;
+	reg		f_latter_byte_n;
+	// }}}
+
+	////////////////////////////////////////////////////////////////////////
+	//
+	// Generate some (assumed) clocking signals
+	// {{{
+	////////////////////////////////////////////////////////////////////////
+	//
+	//
 
 	always @(*)
 	begin
@@ -260,19 +333,6 @@ module rawslave(i_clk, i_reset,
 
 		assume(f_spick_step > 0);
 		assume(f_spick_step <= { 1'b1, {(F_CKBITS-1){1'b0}} });
-
-		// assume(f_sysck_step >  (f_spick_step >> 3));
-		//
-		// If the SPI clock is too fast, we cannot support an 8b
-		// interface
-		// assume(f_sysck_step >  f_spick_step - (f_spick_step>>3));
-		assume(f_sysck_step >  (f_spick_step >> 1)
-					+ (f_spick_step >> 2));
-
-		// While the following isn't strictly necessary, it helps
-		// keep the proof moving along
-		assume(f_sysck_step >= { 3'b001, {(F_CKBITS-3){1'b0}}});
-		// assume(f_spick_step > { 3'b001, {(F_CKBITS-3){1'b0}}});
 	end
 
 	always @(posedge gbl_clk)
@@ -293,6 +353,10 @@ module rawslave(i_clk, i_reset,
 	if ($fell(i_spi_csn))
 		assume(i_spi_sck);
 
+//	always @(posedge gbl_clk)
+//	if ($stable(f_spick_counter[F_CKBITS-1]))
+//		assume($stable(i_spi_sck));
+
 	always @(*)
 	begin
 		f_sysck_next = f_sysck_counter + f_sysck_step;
@@ -302,15 +366,14 @@ module rawslave(i_clk, i_reset,
 		f_will_rise_sck = !i_spi_sck && f_spick_next[F_CKBITS-1];
 		f_will_fall_sck = !i_spi_csn && i_spi_sck && !f_spick_next[F_CKBITS-1];
 	end
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	f_past_valid
-	//
+	// f_past_valid
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
-	reg	f_past_valid_gbl, f_past_valid_spi, f_past_valid_clk;
 
 	initial f_past_valid_gbl = 1'b0;
 	always @(posedge gbl_clk)
@@ -326,18 +389,14 @@ module rawslave(i_clk, i_reset,
 
 	always @(*)
 		assume(i_reset == !f_past_valid_clk);
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Basic SPI protocol rules
-	//
+	// Basic SPI protocol rules
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
-	reg	f_past_csn, f_past_sck, f_clkd_while_idle;
-	wire	f_active, f_fault;
-	reg	[3:0]	f_csn_hi_count, f_csn_to_csn_count,
-			f_csn_lo_count;
 
 	//
 	// Always start de-selected
@@ -352,39 +411,6 @@ module rawslave(i_clk, i_reset,
 	assign	f_active = !i_spi_csn && !f_past_csn;
 	assign	f_fault  =  i_spi_csn && !f_past_sck;
 
-	initial	f_csn_to_csn_count = -1;
-	always @(posedge gbl_clk)
-	if ($fell(i_spi_csn))
-		f_csn_to_csn_count <= 0;
-	else if ($rose(i_clk) && (!(&f_csn_to_csn_count)))
-		f_csn_to_csn_count <= f_csn_to_csn_count + 1;
-
-	initial	f_csn_hi_count = -1;
-	always @(posedge gbl_clk)
-	if (!i_spi_csn)
-		f_csn_hi_count <= 0;
-	else if ($rose(i_clk) && (!(&f_csn_hi_count)))
-		f_csn_hi_count <= f_csn_hi_count + 1;
-
-	initial	f_csn_lo_count = 0;
-	always @(posedge gbl_clk)
-	if (i_spi_csn)
-		f_csn_lo_count <= 0;
-	else if ($rose(i_clk) && (!(&f_csn_lo_count)))
-		f_csn_lo_count <= f_csn_lo_count + 1;
-
-	always @(posedge gbl_clk)
-	if (f_csn_to_csn_count <= F_CK_MIN_CSN_TO_CSN)
-		assume(!$fell(i_spi_csn));
-
-	always @(posedge gbl_clk)
-	if (f_csn_hi_count <= F_CK_MIN_CSN_RECOVERY)
-		assume(!$fell(i_spi_csn));
-
-	always @(posedge gbl_clk)
-	if (f_csn_lo_count <= F_CK_MIN_CSN_ACTIVE)
-		assume(!$rose(i_spi_csn));
-
 	//
 	// When i_spi_csn falls (i.e. activates), the clock must be stable
 	// and *high*
@@ -396,15 +422,22 @@ module rawslave(i_clk, i_reset,
 	// The incoming data line from the master changes on a falling edge
 	// *only*.
 	always @(posedge gbl_clk)
-	if (f_past_valid_gbl && f_active && !$fell(i_spi_sck) && !$fell(i_spi_sck))
+	if (f_past_valid_gbl && f_active && !$fell(i_spi_sck))
 		assume($stable(i_spi_mosi));
 
 	always @(posedge gbl_clk)
 	if ($fell(i_spi_csn))
 		assert(o_frame);
 
+	initial	last_spi_frame = 1'b1;
+	always @(posedge i_clk)
+	if (i_reset)
+		last_spi_frame <= 1'b1;
+	else
+		last_spi_frame <= sync_spi_frame;
+
 	always @(*)
-	if (sync_spi_frame)
+	if (last_spi_frame)
 		assert(o_frame);
 
 	//
@@ -415,6 +448,7 @@ module rawslave(i_clk, i_reset,
 			&& !$past(i_spi_sck) && !$rose(i_spi_sck))
 		assert($stable(o_spi_miso));
 
+/*
 	initial	f_clkd_while_idle <= 1'b1;
 	always @(posedge gbl_clk)
 	if (!i_spi_csn)
@@ -425,11 +459,12 @@ module rawslave(i_clk, i_reset,
 	always @(posedge gbl_clk)
 	if (!f_clkd_while_idle && f_past_csn)
 		assume(i_spi_csn);
-
+*/
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Synchronous Input assumptions
-	//
+	// Synchronous Input assumptions
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
@@ -446,11 +481,11 @@ module rawslave(i_clk, i_reset,
 		assert($stable(o_frame));
 		assert($stable(o_rd));
 	end
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Basic CDC rules
-	//
+	// Basic CDC rules
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
@@ -462,7 +497,7 @@ module rawslave(i_clk, i_reset,
 
 `ifdef	VERIFIC
 	always @(*)
-	case({ sync_spi_stb, sync_stb_pipe })
+	case({ last_spi_stb, sync_spi_stb, sync_stb_pipe })
 	3'b000: begin end
 	3'b001: begin end
 	3'b011: begin end
@@ -474,19 +509,16 @@ module rawslave(i_clk, i_reset,
 `endif
 
 	always @(posedge gbl_clk)
-	if (f_past_valid_gbl && spi_bitcount_n[2:0] == 3'h7)
+	if (f_past_valid_gbl && spi_bitcount_n == 3'h7)
 		assert($stable(xck_oreg));
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Receive sequence checking
-	//
+	// Formal contract: Receive sequence checking
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
-	reg	[8:0]	f_rxseq;
-	reg	[3:0]	f_rxcdc;
-	reg	[7:0]	f_data, f_rcvd;
 
 	initial	f_rxseq = 1;
 	always @(posedge gbl_clk)
@@ -555,9 +587,7 @@ module rawslave(i_clk, i_reset,
 	begin
 		f_rxcdc <= f_rxcdc << 1;
 		if (f_rxseq[8])
-		begin
 			f_rxcdc[0] <= 1;
-		end
 	end
 
 	always @(*)
@@ -566,15 +596,13 @@ module rawslave(i_clk, i_reset,
 
 	always @(*)
 	if (f_rxcdc[0])
-		assert((sync_stb_pipe == 2'b01) && !pre_stb && !o_we);
+		assert(!sync_spi_stb && sync_stb_pipe && !o_we);
 	else if (f_rxcdc[1])
-		assert((sync_stb_pipe == 2'b11) && !pre_stb && !o_we);
+		assert(sync_spi_stb && sync_stb_pipe && !o_we);
 	else if (f_rxcdc[2])
-		assert( pre_stb && !o_we);
-	else if (f_rxcdc[3])
-		assert( !pre_stb &&  o_we);
+		assert(sync_spi_stb && o_we);
 	else
-		assert(!pre_stb && !o_we && sync_stb_pipe != 2'b01);
+		assert(!o_we && (sync_spi_stb || !sync_stb_pipe));
 
 	always @(posedge gbl_clk)
 	if (|f_rxcdc)
@@ -583,27 +611,19 @@ module rawslave(i_clk, i_reset,
 		assert(f_rcvd == spi_byte);
 	end
 
-/*
-	always @(*)
-	case({ sync_spi_frame, sync_frame_pipe })
+	assign	f_sync_frame = { last_spi_frame,
+				sync_spi_frame, sync_frame_pipe };
+
+	always @(posedge gbl_clk)
+	case(f_sync_frame)
 	3'b000: begin end
 	3'b001: begin end
-	3'b011: begin assert(!sync_spi_frame); end
+	3'b011: begin end
 	3'b111: begin end
 	3'b110: begin end
 	3'b100: begin end
 	default: assert(0);
 	endcase
-*/
-	wire	[2:0] f_sync_frame;
-	assign	f_sync_frame = { sync_spi_frame, sync_frame_pipe };
-	always @(posedge gbl_clk)
-	assert(	(f_sync_frame == 3'h0)
-		||(f_sync_frame == 3'h1)
-		||(f_sync_frame == 3'h3)
-		||(f_sync_frame == 3'h7)
-		||(f_sync_frame == 3'h6)
-		||(f_sync_frame == 3'h4));
 
 	always @(posedge gbl_clk)
 	if (pre_stb)
@@ -613,28 +633,21 @@ module rawslave(i_clk, i_reset,
 	end
 
 	always @(*)
-		cover(f_rxseq[9] && !i_spi_csn);
+		cover(f_rxseq[8] && !i_spi_csn);
 
 	always @(*)
 		assume(!f_fault);
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Transmitter sequence checking
-	//
+	// Formal contract: Transmitter sequence checking
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
-	reg		f_pending_rdstb;
-	reg	[7:0]	f_txmit, f_txseq;
-
 	always @(posedge gbl_clk)
 	if (f_past_valid_gbl && (!$past(o_frame) && !$fell(o_rd)))
 		assume($stable(i_byte));
-
-	// always @(posedge gbl_clk)
-	// if (f_past_valid_gbl && (!$past(o_frame) && !$fell(o_rd)))
-		// assume($stable(i_byte));
 
 	initial	f_txseq = 0;
 	always @(posedge gbl_clk)
@@ -643,7 +656,7 @@ module rawslave(i_clk, i_reset,
 	else if (!i_spi_csn && f_will_fall_sck)
 	begin
 		f_txseq <= f_txseq << 1;
-		if (spi_bitcount_n[2:0] == 3'h7)
+		if (spi_bitcount_n == 3'h7)
 		begin
 			f_txseq[0] <= 1'b1;
 			f_txmit <= i_byte;
@@ -655,49 +668,48 @@ module rawslave(i_clk, i_reset,
 	begin
 		if (f_txseq[0])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b000);
+			assert(spi_bitcount_n == 3'b000);
 			assert(f_txmit[7:0] == spi_output);
 		end
 		if (f_txseq[1])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b001);
+			assert(spi_bitcount_n == 3'b001);
 			assert(f_txmit[6:0] == spi_output[7:1]);
 		end
 		if (f_txseq[2])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b010);
+			assert(spi_bitcount_n == 3'b010);
 			assert(f_txmit[5:0] == spi_output[7:2]);
 		end
 		if (f_txseq[3])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b011);
+			assert(spi_bitcount_n == 3'b011);
 			assert(f_txmit[4:0] == spi_output[7:3]);
 		end
 		if (f_txseq[4])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b100);
+			assert(spi_bitcount_n == 3'b100);
 			assert(f_txmit[3:0] == spi_output[7:4]);
 		end
 		if (f_txseq[5])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b101);
+			assert(spi_bitcount_n == 3'b101);
 			assert(f_txmit[2:0] == spi_output[7:5]);
 		end
 		if (f_txseq[6])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b110);
+			assert(spi_bitcount_n == 3'b110);
 			assert(f_txmit[1:0] == spi_output[7:6]);
 		end
 		if (f_txseq[7])
 		begin
-			assert(spi_bitcount_n[2:0] == 3'b111);
+			assert(spi_bitcount_n == 3'b111);
 			assert(f_txmit[0] == spi_output[7]);
 		end
 	end
 
 	////////////////////////////////////////////////////////////////////////
 	//
-	reg	f_pending_wrstb;
 
 	always @(posedge i_clk)
 	if (f_past_valid_clk && $past(o_we))
@@ -725,46 +737,47 @@ module rawslave(i_clk, i_reset,
 	if(f_pending_wrstb)
 	begin
 		assert($stable(spi_byte));
-		assert(xck_stb || sync_stb_pipe[1] || o_we);
+		assert(xck_stb || sync_spi_stb || o_we);
 	end else
 		assert(!pre_stb);
 
 	always @(posedge i_clk)
-	if(f_pending_wrstb && $past(sync_stb_pipe == 2'b11))
+	if(f_pending_wrstb && $past(sync_spi_stb && sync_stb_pipe))
 		assert(o_we || pre_stb);
+	// }}}
+	////////////////////////////////////////////////////////////////////////
+	//
+	// Random induction properties
+	// {{{
+	////////////////////////////////////////////////////////////////////////
+	//
+	//
+	always @(negedge i_spi_sck, posedge i_spi_csn)
+	if (i_spi_csn)
+		f_latter_byte_n <= 1'b0;
+	else if (&spi_bitcount_n)
+		f_latter_byte_n <= 1'b1;
 
-	////////////////////////////////////////////////////////////////////////
-	//
-	//	Random induction properties
-	//
-	////////////////////////////////////////////////////////////////////////
-	//
-	//
 	always @(posedge gbl_clk)
 	if ($rose(i_spi_sck))
-		assert(spi_bitcount == spi_bitcount_n[2:0]);
-
-// sync_spi_rd is not a vector
-//	always @(posedge gbl_clk)
-//	if (f_past_valid_gbl && $fell(i_spi_csn))
-//		assert(sync_spi_rd[0] == sync_spi_rd[1]);
+		assert(spi_bitcount == spi_bitcount_n);
 
 	always @(*)
-	if (spi_bitcount_n[2:0] == 3'h7)
+	if (spi_bitcount_n == 3'h7)
 		assert(!o_frame);
 
 	always @(*)
-	if (spi_bitcount_n[3])
+	if (f_latter_byte_n)
 		assert(!o_frame);
 
 	always @(*)
-	if (&sync_rd_pipe)
+	if (sync_spi_rd && sync_rd_pipe)
 		assert(o_rd || !o_frame);
-
+	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
-	//	Cover properties
-	//
+	// Cover properties
+	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 	//
@@ -783,7 +796,7 @@ module rawslave(i_clk, i_reset,
 		f_bytes_sent <= f_bytes_sent + 1;
 
 	always @(*)
-		f_cvrspd_fast = (f_spick_step == { 1'b1, {(F_CKBITS-1){1'b0}}})
+		f_cvrspd_fast = (f_spick_step == { 1'b1, {(F_CKBITS-1){1'b0}} })
 			&& (f_sysck_step == (f_spick_step >> 1)
 						+ (f_spick_step >> 2) + 1);
 
@@ -791,7 +804,7 @@ module rawslave(i_clk, i_reset,
 		f_cvrspd_equal = (f_sysck_step == f_spick_step);
 
 	always @(*)
-		f_cvrspd_slow = (f_sysck_step == { 1'b1, {(F_CKBITS-1){1'b0}}})
+		f_cvrspd_slow = (f_sysck_step == { 1'b1, {(F_CKBITS-1){1'b0}} })
 			&& (f_spick_step < (f_sysck_step >> 1));
 
 	always @(*)
@@ -847,5 +860,97 @@ module rawslave(i_clk, i_reset,
 	always @(posedge gbl_clk)
 		// 110 steps
 		cover(f_bytes_sent == 2 && $fell(i_spi_csn) && f_cvrspd_slow);
+	// }}}
+	////////////////////////////////////////////////////////////////////////
+	//
+	// "Careless" (i.e. constraining) assumptions
+	// {{{
+	////////////////////////////////////////////////////////////////////////
+	//
+	//
+	localparam	F_CK_MIN_CSN_TO_CSN   = 4'h8;
+	localparam	F_CK_MIN_CSN_RECOVERY = 4'h3;
+	localparam	F_CK_MIN_CSN_ACTIVE   = 4'h2;
+
+	// Clock speed assumptions
+	// {{{
+	always @(*)
+	begin
+		// If the SPI clock is too fast, we cannot support an 8b
+		// interface.  If it's too slow--no one cares.
+		//
+		// The following isn't quite tight enough:
+		//	SPI clock must be less than 1.14x system clock rate
+		// assume(f_sysck_step >  f_spick_step - (f_spick_step>>3));
+		//
+		// We can go faster than that.  Let's instead insist that ...
+		//	SPI clock * 0.75 must be < System clock rate, or ...
+		//	SPI clock must be < 1.333x System clock rate
+		assume(f_sysck_step >  (f_spick_step >> 1)
+					+ (f_spick_step >> 2));
+		//
+		// If we try to run the SPI clock even faster, the design will
+		// fail.  For example, the design fails if the SPI clock is
+		// greater than 1.3333x the system clock rate, but less than
+		// 1.39x the system clock rate (the assumption below) then the
+		// proof fails.
+		//
+		// assume(f_sysck_step >  (f_spick_step >> 1)
+		//			+ (f_spick_step >> 3)
+		//			+ (f_spick_step >> 4)
+		//			+ (f_spick_step >> 5));
+		//
+
+		// While the following isn't strictly necessary, it helps
+		// keep the proof moving along
+		assume(f_sysck_step >= { 3'b001, {(F_CKBITS-3){1'b0}} });
+		// assume(f_spick_step > { 3'b001, {(F_CKBITS-3){1'b0}} });
+	end
+	// }}}
+
+	// f_csn_to_csn_count -- system clocks between CSNs
+	// {{{
+	initial	f_csn_to_csn_count = -1;
+	always @(posedge gbl_clk)
+	if ($fell(i_spi_csn))
+		f_csn_to_csn_count <= 0;
+	else if ($rose(i_clk) && (!(&f_csn_to_csn_count)))
+		f_csn_to_csn_count <= f_csn_to_csn_count + 1;
+	// }}}
+
+	// f_csn_hi_count -- number of system clocks where CSN is inactive (hi)
+	// {{{
+	initial	f_csn_hi_count = -1;
+	always @(posedge gbl_clk)
+	if (!i_spi_csn)
+		f_csn_hi_count <= 0;
+	else if ($rose(i_clk) && (!(&f_csn_hi_count)))
+		f_csn_hi_count <= f_csn_hi_count + 1;
+	// }}}
+
+	// f_csn_hi_count -- number of system clocks where CSN is active (lo)
+	// {{{
+	initial	f_csn_lo_count = 0;
+	always @(posedge gbl_clk)
+	if (i_spi_csn)
+		f_csn_lo_count <= 0;
+	else if ($rose(i_clk) && (!(&f_csn_lo_count)))
+		f_csn_lo_count <= f_csn_lo_count + 1;
+	// }}}
+
+	always @(posedge gbl_clk)
+	if (f_csn_to_csn_count <= F_CK_MIN_CSN_TO_CSN)
+		assume(!$fell(i_spi_csn));
+
+	always @(posedge gbl_clk)
+	if (f_csn_hi_count <= F_CK_MIN_CSN_RECOVERY)
+		assume(!$fell(i_spi_csn));
+
+	always @(posedge gbl_clk)
+	if (f_csn_lo_count <= F_CK_MIN_CSN_ACTIVE)
+		assume(!$rose(i_spi_csn));
+
+	// }}}
 `endif
+// }}}
 endmodule
