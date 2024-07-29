@@ -9,9 +9,12 @@
 // Registers:
 // {{{
 //	0,0: Control/status
-//		(&CSN),4b idx, SCK, MISO[idx]
-//		[22:8]: (Current decoded  command)
-//		[7:0]: Currently executing command
+//		(&CSN),5b idx, SCK, MISO[idx], 4b current channel,
+//			AXI stream stall,
+//			busy (needed for manual cmd interface)
+//			Waiting on an immediate
+//			Active (i.e. running a script)
+//		ABORT (stop the command interpreter, and raise CS#)
 //	0,1: Override
 //		Provide a means of sending commands directly, without scripting
 //		them.  Commands may be written to bits [7:0] as thought they
@@ -22,9 +25,22 @@
 //		- [31]: LAST bit was set on the last one
 //		- [30:28]: Bit field indicating if bytes [23:16], [15:8], [7:0]
 //		  have valid data in them respectively.
+//		[31:24] -- Penultimate byte received
+//		[23:16]	-- Last byte received
+//		[15: 8]	-- Manual override controls
+//			[15:12] control which CS# to activate
+//			[11] Enables manual mode (and hence activates CS#)
+//			[10] Maps to SCK
+//			[ 9] Controls MOSI
+//			[ 8] Read only, returns the current MISO[Channel]
+//		[ 7: 0]	-- Command override
+//			Writes with bit[11] clear will send commands to the
+//			device, one byte at a time.
+//			This mode is cleared on any write to the address
+//			register
 //	0,2: Address
-//		Turns on autonomous mode, instructing the CPU to start at the
-//		address given.
+//		Any write to this address will turn on autonomous mode and
+//		instruct the command interpreter to jump to the given address.
 //	0,3: Clock divider
 //	(??) 1,x: Sets/reads the internal memory of this peripheral.
 // }}}
@@ -116,6 +132,7 @@ module	spicpu #(
 		parameter [ADDRESS_WIDTH+$clog2(DATA_WIDTH/8)-1:0] RESET_ADDRESS
 				= 0,
 		// localparam	AW = LGMEM,
+		parameter	AXIS_ID_WIDTH  = 0,
 		parameter [0:0]	 OPT_MANUAL  = 0,
 		// Verilator lint_off UNUSED
 		parameter 	 MANUAL_CSN  = 12,
@@ -124,6 +141,7 @@ module	spicpu #(
 		parameter 	 MANUAL_MOSI =  9,
 		parameter 	 MANUAL_MISO =  8,
 		// Verilator lint_on  UNUSED
+		parameter [0:0]	 OPT_LITTLE_ENDIAN = 0,
 		parameter [0:0]	 OPT_LOWPOWER = 0,
 		parameter [0:0]	 OPT_START_HALTED= 0,
 		parameter [0:0]	 OPT_SHARED_MISO = 0,
@@ -174,13 +192,19 @@ module	spicpu #(
 		input	wire		M_AXIS_TREADY,
 		output	reg	[7:0]	M_AXIS_TDATA,
 		output	reg		M_AXIS_TLAST,
+		output reg [((AXIS_ID_WIDTH > 0)? AXIS_ID_WIDTH:1)-1:0]
+					M_AXIS_TID,
+		parameter	AXIS_ID_WIDTH  = 0,
+		// output reg		M_AXIS_TABORT,
 		// }}}
+		// output wire		o_interrupt,
 		input	wire		i_sync_signal
 		// }}}
 	);
 
 	// Local declarations
 	// {{{
+	localparam	LGNCHAN = ((AXIS_ID_WIDTH > 0)? AXIS_ID_WIDTH:1);
 	localparam	[1:0]	ADR_CONTROL  = 2'b00,
 				ADR_OVERRIDE = 2'b01,
 				ADR_ADDRESS  = 2'b10,
@@ -190,13 +214,17 @@ module	spicpu #(
 					+ $clog2(DATA_WIDTH/8); // Byte addr wid
 
 	localparam	[2:0]	CMD_START  = 3'h0, // CMD_STOP = 3'h0,
-				CMD_READ   = 3'h1, CMD_SEND  = 3'h2,
+				CMD_READ   = 3'h1,
+				CMD_SEND   = 3'h2,
 				CMD_TXRX   = 3'h3,
 				CMD_LAST   = 3'h4;
 				// CMD_NOOP   = 3'h7;
-	localparam	[3:0]	CMD_HALT   = 4'ha, CMD_WAIT  = 4'hb,
-				CMD_TARGET = 4'hc,
-				CMD_JUMP   = 4'hd;
+	localparam	[3:0]	CMD_TICK   = 4'hb,
+				CMD_CHANNEL= 4'he;
+	localparam	[4:0]	CMD_HALT   = { 4'ha, 1'b0 },
+				CMD_WAIT   = { 4'ha, 1'b1 },
+				CMD_TARGET = { 4'hc, 1'b0 },
+				CMD_JUMP   = { 4'hc, 1'b1 };
 
 	wire		bus_write, bus_read, bus_jump, bus_override, bus_manual;
 	wire	[1:0]	bus_write_addr, bus_read_addr;
@@ -221,6 +249,7 @@ module	spicpu #(
 	reg			r_stopped, r_wait;
 	reg	[NCE-1:0]	dcd_csn;
 	reg	[9:0]		dcd_command;
+	reg	[LGNCHAN-1:0]	dcd_channel;
 
 	reg			imm_cycle;
 	reg	[5:0]		imm_count;
@@ -238,10 +267,16 @@ module	spicpu #(
 	reg		spi_active, spi_last, spi_keep;
 	reg	[6:0]	spi_srout, spi_srin;
 	reg	[4:0]	spi_count;
+	reg	[LGNCHAN-1:0]	spi_channel;
 
 	wire		miso;
 
 	wire	set_tvalid;
+
+	wire			manual_mode, manual_sck, manual_mosi;
+	wire	[NCE-1:0]	manual_csn;
+	wire	[7:0]		manual_data;
+
 
 	// }}}
 	////////////////////////////////////////////////////////////////////////
@@ -262,13 +297,18 @@ module	spicpu #(
 
 	assign	o_wb_stall = 1'b0;
 
+	// o_wb_ack
+	// {{{
 	initial	o_wb_ack = 1'b0;
 	always @(posedge i_clk)
 	if (i_reset)
 		o_wb_ack <= 1'b0;
 	else
 		o_wb_ack <= i_wb_stb && !o_wb_stall;
+	// }}}
 
+	// o_wb_data
+	// {{{
 	always @(posedge i_clk)
 	if (OPT_LOWPOWER && i_reset)
 		o_wb_data <= 0;
@@ -279,22 +319,25 @@ module	spicpu #(
 		ADR_CONTROL:  begin end
 		ADR_OVERRIDE: o_wb_data <= { ovw_data, manual_data, ovw_cmd };
 		ADR_ADDRESS:  o_wb_data[BAW-1:0] <= pf_insn_addr;
-		ADR_CKCOUNT:  o_wb_data[11:1] <= ckcount;
+		ADR_CKCOUNT:  o_wb_data[12:1] <= ckcount;
 		default: begin end
 		endcase
 
 	end else if (OPT_LOWPOWER)
 		o_wb_data <= 0;
+	// }}}
 
 	assign	bus_override = r_stopped && bus_write
 			&& bus_write_addr == ADR_OVERRIDE
 			&& bus_write_strb[0]
 			&& (!OPT_MANUAL || !bus_write_data[MANUAL_BIT]
 				|| !bus_write_strb[MANUAL_BIT/8]);
+
 	assign	bus_manual = OPT_MANUAL && bus_write
 			&& bus_write_addr == ADR_OVERRIDE
 			&& bus_write_data[MANUAL_BIT]
 			&& bus_write_strb[MANUAL_BIT/8];
+
 	assign	bus_jump = bus_write && bus_write_addr == ADR_ADDRESS
 			&& (&bus_write_strb) && r_stopped;
 	// }}}
@@ -311,7 +354,8 @@ module	spicpu #(
 
 `ifndef	FORMAL
 	dblfetch #(
-		.ADDRESS_WIDTH(BAW), .DATA_WIDTH(DATA_WIDTH), .INSN_WIDTH(8)
+		.ADDRESS_WIDTH(BAW), .DATA_WIDTH(DATA_WIDTH), .INSN_WIDTH(8),
+		.OPT_LITTLE_ENDIAN(OPT_LITTLE_ENDIAN)
 	) u_fetch (
 		// {{{
 		.i_clk(i_clk), .i_reset(i_reset || cpu_reset),
@@ -417,10 +461,6 @@ module	spicpu #(
 	//
 	//
 
-	// localparam	LASTBIT = 9;
-			// KEEPBIT = 8;
-			// Bits 7-0 are data bits
-
 	assign	next_ready = (!dcd_valid || !spi_stall)
 		&& (!imm_cycle || dcd_send)
 		&& (next_cpu || (!r_stopped && (!r_wait || i_sync_signal)));
@@ -460,7 +500,7 @@ module	spicpu #(
 	always @(posedge i_clk)
 	begin
 		if (next_valid && next_ready
-				&& !imm_cycle && next_insn[7:4] == CMD_HALT)
+				&& !imm_cycle && next_insn[7:3] == CMD_HALT)
 			r_stopped <= 1'b1;
 		if (next_valid && next_ready && next_cpu)
 			r_stopped <= 1'b1;
@@ -482,7 +522,7 @@ module	spicpu #(
 			r_wait <= 1'b0;
 
 		if (next_valid && next_ready && !imm_cycle
-						&& next_insn[7:4] == CMD_WAIT)
+						&& next_insn[7:3] == CMD_WAIT)
 			r_wait <= 1'b1;
 		if ((!imm_cycle || dcd_send)&&next_valid&& next_illegal)
 			r_wait <= 1'b0;
@@ -498,50 +538,47 @@ module	spicpu #(
 	always @(posedge i_clk)
 	begin
 		if (dcd_ready)
+		begin
 			dcd_valid <= 1'b0;
+			if (OPT_LOWPOWER)
+				dcd_command[9:0] <= 10'h00;
+		end
 
 		if (dcd_stop)
 			dcd_active <= 1'b0;
 
-		if (next_valid && next_ready)
+		if (imm_cycle && !dcd_send)
+		begin // READ # in progress
+			// {{{
+			dcd_command[9:0] <= {
+				(dcd_last && imm_count == 1),
+				dcd_keep, 8'h00 };
+			imm_count <=  imm_count - 1;
+			imm_cycle <= (imm_count > 1);
+			if (imm_count == 1)
+				dcd_last <= 1'b0;
+			// }}}
+		end else if (next_valid && next_ready)
 		begin
 			// {{{
 			dcd_stop  <= 1'b0;
 			dcd_valid <= next_valid || dcd_stop;
 			dcd_byte  <= 1'b0;
+			dcd_command[9:0] <= { 2'h00, 8'h0 };
 			if (imm_cycle)
-			begin
+			begin // SEND #
 				// {{{
 				dcd_byte <= 1'b1;
-				dcd_valid <= 1'b1;
-				if (!dcd_send)
-				begin // READ # in progress
-					// {{{
-					dcd_command[9:0] <= {
-						(dcd_last && imm_count == 1),
-						dcd_keep, 8'h00 };
-					imm_count <=  imm_count - 1;
-					imm_cycle <= (imm_count > 1);
-					if (imm_count == 1)
-						dcd_last <= 1'b0;
-					// }}}
-				end else if (next_valid)
-				begin // SEND #
-					// {{{
-					dcd_command[9:0] <= { 1'b0,
-						dcd_keep, next_insn[7:0] };
-					imm_count <= imm_count - 1;
-					imm_cycle <= (imm_count > 1);
-					if (!dcd_keep || imm_count == 1)
-						dcd_last <= 1'b0;
-					// }}}
-				end else begin // Waitn on (unavail) send data
-					// {{{
-					dcd_valid <= 1'b0;
-					if (OPT_LOWPOWER)
-						dcd_command[9:0] <= 10'h00;
-					// }}}
-				end
+				dcd_valid <= dcd_active;
+				dcd_command[9:0] <= { 1'b0,
+					dcd_keep, next_insn[7:0] };
+				imm_count <= imm_count - 1;
+				imm_cycle <= (imm_count > 1);
+				if (!dcd_keep || imm_count == 1)
+				begin
+					dcd_last <= 1'b0;
+					dcd_command[9] <= 1'b1;
+				end end
 				// }}}
 			end else if (next_valid) casez(next_insn[7:4])
 			{ CMD_START, 1'b? }: begin // START #ID
@@ -564,8 +601,8 @@ module	spicpu #(
 				// }}}
 			{ CMD_READ,  1'b? }: begin // READ #NMBR
 				// {{{
-				dcd_valid <= 1'b1;
-				dcd_byte  <= 1'b1;
+				dcd_valid <= dcd_active;// Start immediately
+				dcd_byte  <= 1'b1;	// Need 8 clocks
 				dcd_send  <= 1'b0; // Not sending data
 				dcd_keep  <= 1'b1; // but we are keeping results
 				imm_cycle <= (next_insn[4:0] > 0);
@@ -601,7 +638,7 @@ module	spicpu #(
 			// }}}
 			{ CMD_LAST,  1'b? }:
 				{ dcd_valid, dcd_last } <= 2'b01; // LAST insn
-			CMD_HALT, CMD_WAIT: begin	// WAIT, HALT
+			CMD_HALT[4:1]: begin	// WAIT, HALT
 				// {{{
 				dcd_valid  <= (dcd_active);
 				dcd_csn    <= -1;
@@ -617,22 +654,14 @@ module	spicpu #(
 					dcd_stop   <= 1'b1;
 				end end
 				// }}}
-			CMD_TARGET: begin // TARGET
+			CMD_TICK: begin // TICK
 				// {{{
-				dcd_valid  <= (dcd_active);
-				pf_jump_addr <= next_insn_addr + 1; // TARGET
-				dcd_csn    <= -1;
-				dcd_active <= 1'b0;
-				dcd_byte   <= 1'b0;
-				dcd_last   <= 1'b0;
-
-				if (dcd_active)
-				begin
-					// Implied stop
-					dcd_stop   <= 1'b1;
-				end end
+				dcd_valid <= dcd_active;
+				dcd_keep  <= 1'b0;
+				dcd_byte  <= 1'b0;
+				end
 				// }}}
-			CMD_JUMP:   begin // JUMP
+			CMD_TARGET[4:1]: begin // TARGET || JUMP
 				// {{{
 				dcd_valid  <= (dcd_active);
 				dcd_csn    <= -1;
@@ -646,16 +675,23 @@ module	spicpu #(
 					dcd_stop   <= 1'b1;
 				end end
 				// }}}
+			CMD_CHANNEL: begin // Channel #
+				// {{{
+				dcd_valid  <= 1'b0;
+				dcd_channel<=  next_insn[LGNCHAN-1:0];
+				end
+				// }}}
+			CMD_NOOP: dcd_valid <= 1'b0;
 			default: dcd_valid <= 1'b0;
 			endcase
 
-			if ((!imm_cycle || dcd_send)&&next_valid&& next_illegal)
+			if (next_illegal)
 			begin
+				// ILLEGAL instruction!!!  Deactivate all
 				dcd_valid  <=  dcd_active;
-				dcd_active <= (dcd_active && !dcd_stop);
+				dcd_active <= 1'b0;
 				dcd_csn    <= -1;
 				dcd_byte   <= 1'b0;
-				r_stopped  <= 1'b1;
 			end
 			// }}}
 		end
@@ -667,6 +703,7 @@ module	spicpu #(
 			dcd_active <=  0;
 			dcd_csn    <= -1;
 			dcd_stop   <=  0;
+			dcd_channel<=  0;
 			imm_cycle  <=  0;
 			imm_count  <=  0;
 			// }}}
@@ -682,24 +719,21 @@ module	spicpu #(
 	//
 
 	// Offers a simple bit-banging interface, should it be required
-	wire			r_manual, manual_sck, manual_mosi;
-	wire	[NCE-1:0]	manual_csn;
-	wire	[7:0]		manual_data;
-
 	generate if (OPT_MANUAL)
 	begin : GEN_MANUAL;
 		// {{{
-		reg	manual, r_sck, r_mosi;
+		reg			r_manual, r_sck, r_mosi;
 		reg	[NCE-1:0]	r_csn;
 
 		// r_manual
 		// {{{
+		initial	r_manual = 0;
 		always @(posedge i_clk)
 		if (i_reset || !r_stopped || bus_jump)
 			r_manual <= 1'b0;
 		else if (bus_write && bus_write_addr == ADR_OVERRIDE
 				&& bus_write_strb[MANUAL_BIT/8])
-			manual <= bus_write_data[MANUAL_BIT];
+			r_manual <= bus_write_data[MANUAL_BIT];
 		// }}}
 
 		// r_csn
@@ -712,7 +746,8 @@ module	spicpu #(
 			begin
 				r_csn <= ~(1 << bus_write_data[15:12]);
 
-				if (!bus_write_data[MANUAL_BIT])
+				if (!bus_write_data[MANUAL_BIT]
+						|| (&bus_write_data[15:12]))
 					r_csn <= -1;
 			end
 
@@ -736,11 +771,14 @@ module	spicpu #(
 		end
 		// }}}
 
-		assign	r_manual = manual;
+		assign	manual_mode = r_manual;
+		assign	manual_csn  = r_csn;
+		assign	manual_sck  = r_sck;
+		assign	manual_mosi = r_mosi;
 		// }}}
 	end else begin : NO_MANUAL_CONTROL
 		// {{{
-		assign	r_manual    = 1'b0;
+		assign	manual_mode = 1'b0;
 		assign	manual_csn  = -1;
 		assign	manual_sck  = DEF_CPOL;
 		assign	manual_mosi = 0;
@@ -774,7 +812,7 @@ module	spicpu #(
 	begin
 		// ckcount = divisor / 2, since we count half edges
 		if (bus_write_strb[1])
-			ckcount[10:7] <= bus_write_data[11:8];
+			ckcount[11:7] <= bus_write_data[12:8];
 		if (bus_write_strb[0])
 			ckcount[6:0] <= bus_write_data[7:1];
 	end
@@ -834,6 +872,7 @@ module	spicpu #(
 	begin
 		spi_last   <= dcd_command[9];
 		spi_keep   <= dcd_command[8];
+		spi_channel<= dcd_channel;
 	end
 	// }}}
 
@@ -871,6 +910,8 @@ module	spicpu #(
 	end
 	// }}}
 
+	// spi_srin -- incoming shift register
+	// {{{
 	generate if (OPT_SHARED_MISO)
 	begin : GEN_SHARED_MISO
 		assign	miso = i_spi_miso;
@@ -878,8 +919,6 @@ module	spicpu #(
 		assign	miso = |(i_spi_miso & ~o_spi_csn);
 	end endgenerate
 
-	// spi_srin -- incoming shift register
-	// {{{
 	always @(posedge i_clk)
 	if (OPT_LOWPOWER && i_reset)
 		spi_srin <= 0;
@@ -938,6 +977,19 @@ module	spicpu #(
 			M_AXIS_TDATA <= 8'b0;
 	end
 	// }}}
+
+	// M_AXIS_TID
+	// {{{
+	always @(posedge i_clk)
+	if (!M_AXIS_TVALID || M_AXIS_TREADY)
+	begin
+		if (!OPT_LOWPOWER || set_tvalid)
+			M_AXIS_TID <= spi_channel;
+		else
+			M_AXIS_TID <= 0;
+	end
+	// }}}
+
 
 	// M_AXIS_TLAST
 	// {{{

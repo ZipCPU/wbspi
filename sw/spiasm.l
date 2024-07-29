@@ -66,16 +66,20 @@ extern "C" int yylex();
 extern "C" int	yywrap() { return 1;}
 
 #define	I_START		0
-#define	I_STOP		1
+// #define	I_STOP		1
 #define	I_READ		2
 #define	I_SEND		4
 #define	I_TXRX		6
 #define	I_LAST		8
 #define	I_HALT		10
-#define	I_WAIT		11
-#define	I_TARGET	12
-#define	I_JUMP		13
-#define	I_NOOP		14
+#define	I_TICK		11
+#define	I_JUMP		12
+#define	I_CHANNEL	14
+#define	I_NOOP		15
+//
+#define	I_STOP		16
+#define	I_TARGET	17
+#define	I_WAIT		18
 
 int	posn = 0;
 bool	m_debug = false;
@@ -100,9 +104,12 @@ void	label(const char *);
 (?i:LAST)	{ addinsn(I_LAST); }
 (?i:WAIT)	{ addinsn(I_WAIT); }
 (?i:HALT)	{ addinsn(I_HALT); }
+(?i:TICK)	{ addinsn(I_TICK); }
 (?i:TGT)	{ addinsn(I_TARGET); }
 (?i:TARGET)	{ addinsn(I_TARGET); }
 (?i:JUMP)	{ addinsn(I_JUMP); }
+(?i:CHAN)	{ addinsn(I_CHAN); }
+(?i:CHANNEL)	{ addinsn(I_CHANNEL); }
 (?i:NOP)	{ addinsn(I_NOOP); }
 (?i:NOOP)	{ addinsn(I_NOOP); }
 [A-Za-z_][A-Za-z_0-9]*[ \t]*=[ \t]*0[xX][0-9A-Fa-f] { adddefn(yytext);}
@@ -116,6 +123,7 @@ void	label(const char *);
 0		  { addimm(0); }
 ","		{ }
 [ \t]+		{ }
+",".*\n		{ }
 ";".*\n		{ }
 "#".*\n	{ }
 "//".*\n	{ }
@@ -167,7 +175,7 @@ void	addinsn(int i) {
 		// {{{
 		fprintf(stderr, "Lastpos = %d\n", m_lastpos);
 		if (m_pos > m_lastpos)
-		switch(((m_binary[m_lastpos] & 0xe0) >> 4) & 0x0f) {
+		switch((m_binary[m_lastpos] >> 5) & 0x07) {
 		case I_START:
 			// {{{
 			if (m_binary[m_lastpos] == 0x01f)
@@ -212,19 +220,36 @@ void	addinsn(int i) {
 		case I_LAST:
 			fprintf(stderr, "> LAST\n");
 			break;
-		case I_TARGET:
-			fprintf(stderr, "> TARGET\n");
-			break;
-		case I_WAIT: case I_HALT:
+		case 0x5: // HALT/WAIT / TICK
 			// {{{
-			if (((m_binary[m_lastpos] & 0xf0) >> 4) == I_WAIT)
+			if (0xa0 == (m_binary[m_lastpos] & 0x0f8))
+				fprintf(stderr, "> HALT\n");
+			else if (0xa8 == (m_binary[m_lastpos] & 0x0f8))
 				fprintf(stderr, "> WAIT\n");
 			else
-				fprintf(stderr, "> HALT\n");
+				fprintf(stderr, "> TICK\n");
 			break;
 			// }}}
-		default:
+		case 0x6: // TARGET/JUMP
+			// {{{
+			if (0xc0 == (m_binary[m_lastpos] & 0x0f8))
+				fprintf(stderr, "> TARGET\n");
+			else if (0xc8 == (m_binary[m_lastpos] & 0x0f8))
+				fprintf(stderr, "> JUMP\n");
+			else
+				fprintf(stderr, "> ILL!\n");
 			break;
+			// }}}
+		case 0x7: // CHAN / NOOP
+			// {{{
+			if (0xe0 == (m_binary[m_lastpos] & 0x0f0))
+				fprintf(stderr, "> CHANNEL %d\n",
+					m_binary[m_lastpos] & 0x0f);
+			else
+				fprintf(stderr, "> NOOP\n",
+			break;
+			// }}}
+		default: break;	// Should never get here
 		}
 
 		fprintf(stderr, "%02d: ", m_pos);
@@ -245,10 +270,14 @@ void	addinsn(int i) {
 				fprintf(stderr, "Insn #%2d: HALT\n", i); break;
 			case I_WAIT:
 				fprintf(stderr, "Insn #%2d: WAIT\n", i); break;
+			case I_TICK:
+				fprintf(stderr, "Insn #%2d: TICK\n", i); break;
 			case I_TARGET:
 				fprintf(stderr, "Insn #%2d: TARGET\n", i); break;
 			case I_JUMP:
 				fprintf(stderr, "Insn #%2d: JUMP\n", i); break;
+			case I_CHANNEL:
+				fprintf(stderr, "Insn #%2d: CHANNEL\n", i); break;
 			case I_NOOP:
 				fprintf(stderr, "Insn #%2d: NOOP\n", i); break;
 			default:
