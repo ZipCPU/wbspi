@@ -73,12 +73,12 @@ extern "C" int	yywrap() { return 1;}
 #define	I_LAST		8
 #define	I_HALT		10
 #define	I_TICK		11
-#define	I_JUMP		12
+#define	I_TARGET	12
 #define	I_CHANNEL	14
 #define	I_NOOP		15
 //
 #define	I_STOP		16
-#define	I_TARGET	17
+#define	I_JUMP		17
 #define	I_WAIT		18
 
 int	posn = 0;
@@ -108,7 +108,7 @@ void	label(const char *);
 (?i:TGT)	{ addinsn(I_TARGET); }
 (?i:TARGET)	{ addinsn(I_TARGET); }
 (?i:JUMP)	{ addinsn(I_JUMP); }
-(?i:CHAN)	{ addinsn(I_CHAN); }
+(?i:CHAN)	{ addinsn(I_CHANNEL); }
 (?i:CHANNEL)	{ addinsn(I_CHANNEL); }
 (?i:NOP)	{ addinsn(I_NOOP); }
 (?i:NOOP)	{ addinsn(I_NOOP); }
@@ -123,7 +123,6 @@ void	label(const char *);
 0		  { addimm(0); }
 ","		{ }
 [ \t]+		{ }
-",".*\n		{ }
 ";".*\n		{ }
 "#".*\n	{ }
 "//".*\n	{ }
@@ -175,7 +174,7 @@ void	addinsn(int i) {
 		// {{{
 		fprintf(stderr, "Lastpos = %d\n", m_lastpos);
 		if (m_pos > m_lastpos)
-		switch((m_binary[m_lastpos] >> 5) & 0x07) {
+		switch((m_binary[m_lastpos] >> 4) & 0x0e) {
 		case I_START:
 			// {{{
 			if (m_binary[m_lastpos] == 0x01f)
@@ -220,7 +219,7 @@ void	addinsn(int i) {
 		case I_LAST:
 			fprintf(stderr, "> LAST\n");
 			break;
-		case 0x5: // HALT/WAIT / TICK
+		case 0xa: // HALT/WAIT / TICK
 			// {{{
 			if (0xa0 == (m_binary[m_lastpos] & 0x0f8))
 				fprintf(stderr, "> HALT\n");
@@ -230,7 +229,7 @@ void	addinsn(int i) {
 				fprintf(stderr, "> TICK\n");
 			break;
 			// }}}
-		case 0x6: // TARGET/JUMP
+		case 0xc: // TARGET/JUMP
 			// {{{
 			if (0xc0 == (m_binary[m_lastpos] & 0x0f8))
 				fprintf(stderr, "> TARGET\n");
@@ -240,13 +239,13 @@ void	addinsn(int i) {
 				fprintf(stderr, "> ILL!\n");
 			break;
 			// }}}
-		case 0x7: // CHAN / NOOP
+		case 0xe: // CHAN / NOOP
 			// {{{
 			if (0xe0 == (m_binary[m_lastpos] & 0x0f0))
 				fprintf(stderr, "> CHANNEL %d\n",
 					m_binary[m_lastpos] & 0x0f);
 			else
-				fprintf(stderr, "> NOOP\n",
+				fprintf(stderr, "> NOOP\n");
 			break;
 			// }}}
 		default: break;	// Should never get here
@@ -286,30 +285,12 @@ void	addinsn(int i) {
 		// }}}
 	}
 
-	char	b;
-
-	if (m_imm) {
-		m_binary[m_lastpos] &= 0x0e0;
-		m_binary[m_lastpos] |= (m_numimm - 1);
-		if (m_numimm == 0) {
-			fprintf(stderr, "ERR: No immediates for command %s\n",
-				(((m_binary[m_lastpos] >> 4) & 0x0f) == I_SEND)
-					? "SEND" : "TXRX");
-		}
-	}
-
-	i &= 0x0f;
 	if (i == I_STOP) {
 		if (!m_active)
 			// Two stops in a row are pointless
 			return;
 		m_binary[m_pos] = 0x01f;
 		m_active = false;
-	} else if (i == I_START) {
-		m_binary[m_pos] = (I_START) << 4;	// i.e. == 0
-		if (m_active) {
-			addinsn(I_STOP);
-		} m_active = true;
 	} else if (m_imm && ( ((m_binary[m_lastpos] & 0x0e0) >> 4) == i)
 			&& m_numimm < 32 && (i== I_TXRX || i == I_SEND)) {
 		// Do nothing.  No new instruction, we just continue the last
@@ -319,7 +300,60 @@ void	addinsn(int i) {
 		}
 		return;
 	} else {
-		m_binary[m_pos] = (i<<4);
+		switch(i) {
+		case I_START:
+			if (m_active) {
+				addinsn(I_STOP);
+			} m_binary[m_pos] = 0;
+			m_active = true;
+			break;
+		case I_READ:
+			assert(m_active);
+			m_binary[m_pos] = 0x20;
+			break;
+		case I_SEND:
+			assert(m_active);
+			m_binary[m_pos] = 0x40;
+			break;
+		case I_TXRX:
+			assert(m_active);
+			m_binary[m_pos] = 0x60;
+			break;
+		case I_LAST:
+			m_binary[m_pos] = 0x80;
+			break;
+		case I_HALT:
+			if (m_halted)
+				return;
+			m_binary[m_pos] = 0xa0;
+			break;
+		case I_TICK:
+			m_binary[m_pos] = 0xb0;
+			break;
+		case I_TARGET:
+			m_binary[m_pos] = 0xc0;
+			break;
+		case I_CHANNEL:
+			assert(!m_active);
+			m_binary[m_pos] = 0xe0;
+			break;
+		case I_NOOP:
+			m_binary[m_pos] = 0xf0;
+			break;
+		case I_STOP:
+			// Handled above, so should never come here
+			m_binary[m_pos] = 0x1f;
+			m_active = false;
+			break;
+		case I_JUMP:
+			m_binary[m_pos] = 0xc8;
+			break;
+		case I_WAIT:
+			m_binary[m_pos] = 0xa8;
+			break;
+		default: m_binary[m_pos] = 0x1f;
+			m_active = false;
+		}
 
 		if (i == I_WAIT || i == I_HALT || i == I_JUMP)
 			m_active = false;
@@ -354,13 +388,19 @@ void	addimm_lbl(const char *id) {
 void	addimm(int imm) {
 	// {{{
 	if (verbose_flag)
-		fprintf(stderr, "ADD-IMM: 0x%02x\n", imm & 0x0ff);
+		fprintf(stderr, "ADD-IMM: 0x%02x (INSN %d, IMM=%s)\n",
+			imm & 0x0ff, m_last_insn, imm ? "true":"false");
 	if (m_imm) {
 		// {{{
+		if (m_numimm != 0) {
+			assert(m_last_insn == I_SEND
+				|| m_last_insn == I_TXRX);
+		}
+
 		if (m_numimm == 32) {
 			m_binary[m_lastpos] &= 0x0e0;
 			m_binary[m_lastpos] |= 0x1f;
-			addinsn(m_binary[m_lastpos] >> 4);
+			addinsn(m_last_insn);
 		}
 
 		m_binary[m_pos++] = imm;
@@ -374,14 +414,14 @@ void	addimm(int imm) {
 		unsigned	opcode;
 		const char	*errcode;
 
-		opcode  = (m_binary[m_pos-1] >> 4) & 0x0f;
 		errcode = NULL;
-		switch(opcode) {
-		case I_START: case 1:
+		switch(m_last_insn) {
+		case I_START:
 			m_binary[m_lastpos] &= 0x0e0;
 			m_binary[m_lastpos] |= (imm & 0x1f);
+			m_imm = true;
 			break;
-		case I_READ: case 3:
+		case I_READ:
 			if (imm == 0) {
 				fprintf(stderr, "ERR: Read immediate cannot be zero!\n");
 			} else if(imm > 32) {
@@ -401,12 +441,16 @@ void	addimm(int imm) {
 				m_binary[m_lastpos] &= 0xe0;
 				m_binary[m_lastpos] |= ((imm-1) & 0x1f);
 			}
+			m_imm = true;
 			break;
 		case I_LAST:
 			errcode = "LAST";
 			break;
 		case I_WAIT:
-			errcode = "WAIT";
+			if (m_binary[m_lastpos] & 0x07)
+				errcode = "WAIT";
+			m_binary[m_lastpos] &= 0xf8;
+			m_binary[m_lastpos] |= imm;
 			break;
 		case I_HALT:
 			errcode = "HALT";
@@ -479,14 +523,34 @@ void	dump(FILE *fp) {
 			printf("\n");
 			p += (m_binary[p] & 0x01f)+1;
 			break;
-		case I_LAST: case I_LAST+1:
-			fprintf(fp, "  LAST\n"); break;
-		case I_HALT:	fprintf(fp, "  HALT\n"); break;
-		case I_WAIT:	fprintf(fp, "  WAIT\n"); break;
-		case I_TARGET:	fprintf(fp, "  TARGET\n"); break;
-		case I_JUMP:	fprintf(fp, "  JUMP\n"); break;
-		case I_NOOP:	fprintf(fp, "  NOOP\n"); break;
-		default:	fprintf(fp, "  ILL\t(0x%x)\n", op); break;
+		case I_LAST:
+			printf("  LAST\n"); break;
+		case I_HALT:
+			if (0x08 == (m_binary[p] & 0x18)) {
+				if (m_binary[p] & 0x07) {
+					printf("  WAIT %d\n", m_binary[p] & 7);
+				} else
+					printf("  WAIT\n");
+			} else if (0x00 == (m_binary[p] & 0x18)) {
+				printf("  HALT\n"); break;
+			} else
+				printf("  TICK\n"); break;
+			break;
+		case I_TARGET:	if (m_binary[p] & 0x10)
+				printf("  ILLEGAL!!! 0x%02x\n",
+					m_binary[p]);
+			else if(m_binary[p] & 0x08)
+				printf("  JUMP\n");
+			else
+				printf("  TARGET\n");
+			break;
+		case I_CHANNEL:	if (0x0f0 == (m_binary[p] & 0x0f0))
+				printf("  NOOP\n");
+			else
+				printf("  CHANNEL %d\n",
+					m_binary[p] & 0x0f);
+			break;
+		default:	printf("  ILL\t(0x%x)\n", op); break;
 		}
 	}
 }
@@ -529,6 +593,10 @@ void	label(const char *str) {
 		addinsn(I_HALT);
 	}
 
+	if (verbose_flag) {
+		fprintf(stderr, "New-Label: %s at %d\n", str, m_pos);
+	}
+
 	symlist[nsyms].addr = m_pos;
 	symlist[nsyms].str  = strdup(str);
 
@@ -546,9 +614,17 @@ unsigned	filesz(FILE *fp) {
 	// {{{
 	unsigned long	here = ftell(fp), endp;
 
-	fseek(fp, 0l, SEEK_END);
+	if (0 != fseek(fp, 0l, SEEK_END)) {
+		fprintf(stderr, "ERR: FILESZ(FSEEK)\n");
+		perror("O/S Err:");
+		exit(EXIT_FAILURE);
+	}
 	endp = ftell(fp);
-	fseek(fp, here, SEEK_SET);
+	if (0 != fseek(fp, here, SEEK_SET)) {
+		fprintf(stderr, "ERR: FILESZ(FSEEK return)\n");
+		perror("O/S Err:");
+		exit(EXIT_FAILURE);
+	}
 	return (unsigned)(endp-here);
 }
 // }}}

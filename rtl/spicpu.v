@@ -194,11 +194,10 @@ module	spicpu #(
 		output	reg		M_AXIS_TLAST,
 		output reg [((AXIS_ID_WIDTH > 0)? AXIS_ID_WIDTH:1)-1:0]
 					M_AXIS_TID,
-		parameter	AXIS_ID_WIDTH  = 0,
 		// output reg		M_AXIS_TABORT,
 		// }}}
-		// output wire		o_interrupt,
-		input	wire		i_sync_signal
+		input	wire		i_sync_signal,
+		output wire		o_interrupt
 		// }}}
 	);
 
@@ -218,9 +217,9 @@ module	spicpu #(
 				CMD_SEND   = 3'h2,
 				CMD_TXRX   = 3'h3,
 				CMD_LAST   = 3'h4;
-				// CMD_NOOP   = 3'h7;
 	localparam	[3:0]	CMD_TICK   = 4'hb,
-				CMD_CHANNEL= 4'he;
+				CMD_CHANNEL= 4'he,
+				CMD_NOOP   = 4'hf;
 	localparam	[4:0]	CMD_HALT   = { 4'ha, 1'b0 },
 				CMD_WAIT   = { 4'ha, 1'b1 },
 				CMD_TARGET = { 4'hc, 1'b0 },
@@ -230,6 +229,8 @@ module	spicpu #(
 	wire	[1:0]	bus_write_addr, bus_read_addr;
 	wire	[31:0]	bus_write_data;
 	wire	[3:0]	bus_write_strb;
+
+	reg	[31:0]	w_control_word;
 
 	reg	[15:0]		ovw_data;
 	reg	[7:0]		ovw_cmd;
@@ -246,7 +247,7 @@ module	spicpu #(
 	wire			dcd_ready;
 	reg			dcd_active, dcd_last, dcd_send, dcd_keep,
 				dcd_byte;
-	reg			r_stopped, r_wait;
+	reg			r_stopped, r_wait, r_err;
 	reg	[NCE-1:0]	dcd_csn;
 	reg	[9:0]		dcd_command;
 	reg	[LGNCHAN-1:0]	dcd_channel;
@@ -277,7 +278,6 @@ module	spicpu #(
 	wire	[NCE-1:0]	manual_csn;
 	wire	[7:0]		manual_data;
 
-
 	// }}}
 	////////////////////////////////////////////////////////////////////////
 	//
@@ -307,6 +307,29 @@ module	spicpu #(
 		o_wb_ack <= i_wb_stb && !o_wb_stall;
 	// }}}
 
+	always @(*)
+	begin
+		w_control_word = 0;
+		//
+		w_control_word[23:16] = next_insn;
+		//
+		w_control_word[10] = M_AXIS_TVALID;
+		w_control_word[ 9] = M_AXIS_TVALID && M_AXIS_TREADY;
+		w_control_word[ 8] = M_AXIS_TLAST;
+		//
+		w_control_word[7] = next_valid;
+		w_control_word[5] = dcd_send;
+		w_control_word[4] = imm_cycle;
+		w_control_word[3] = manual_mode;
+		w_control_word[2] = r_err;
+		w_control_word[1] = r_wait;
+		w_control_word[0] = r_stopped && !next_valid;
+	end
+
+	// o_interrupt is true if the CPU may send a command w/o interrupting
+	// anything
+	assign	o_interrupt = r_stopped && !next_valid;
+
 	// o_wb_data
 	// {{{
 	always @(posedge i_clk)
@@ -316,7 +339,7 @@ module	spicpu #(
 	begin
 		o_wb_data <= 0;
 		case(bus_read_addr)
-		ADR_CONTROL:  begin end
+		ADR_CONTROL:  o_wb_data <= w_control_word;
 		ADR_OVERRIDE: o_wb_data <= { ovw_data, manual_data, ovw_cmd };
 		ADR_ADDRESS:  o_wb_data[BAW-1:0] <= pf_insn_addr;
 		ADR_CKCOUNT:  o_wb_data[12:1] <= ckcount;
@@ -384,7 +407,7 @@ module	spicpu #(
 		next_valid <= 0;
 	else if (bus_override || (pf_valid && pf_ready))
 		next_valid <= 1;
-	else if (next_ready)
+	else if (next_ready || (r_stopped && !next_cpu))
 		next_valid <= 0;
 
 `ifdef	FORMAL
@@ -475,13 +498,13 @@ module	spicpu #(
 		if (bus_jump)
 			cpu_new_pc <= 1'b1;
 		if (next_valid && next_ready
-				&& !imm_cycle && next_insn[7:4] == CMD_JUMP)
+				&& !imm_cycle && next_insn[7:3] == CMD_JUMP)
 			cpu_new_pc <= 1'b1;
 
 		// pf_jump_addr
 		// {{{
 		if (next_valid && next_ready
-				&& !imm_cycle && next_insn[7:4] == CMD_TARGET)
+				&& !imm_cycle && next_insn[7:3] == CMD_TARGET)
 			pf_jump_addr <= next_insn_addr + 1;	// TARGET
 		if (bus_jump)
 			pf_jump_addr <= bus_write_data[BAW-1:0];
@@ -511,6 +534,23 @@ module	spicpu #(
 
 		if (i_reset)
 			r_stopped <= OPT_START_HALTED;
+	end
+	// }}}
+
+	// r_err
+	// {{{
+	always @(posedge i_clk)
+	begin
+		if (!r_stopped)
+		begin
+			r_err <= 1'b0;
+			if (next_valid && next_illegal)
+				r_err <= 1'b1;
+		end else if (bus_jump)
+			r_err <= 1'b0;
+
+		if (i_reset)
+			r_err <= 1'b0;
 	end
 	// }}}
 
@@ -578,7 +618,7 @@ module	spicpu #(
 				begin
 					dcd_last <= 1'b0;
 					dcd_command[9] <= 1'b1;
-				end end
+				end
 				// }}}
 			end else if (next_valid) casez(next_insn[7:4])
 			{ CMD_START, 1'b? }: begin // START #ID
@@ -586,6 +626,7 @@ module	spicpu #(
 				dcd_valid <= 1'b1;
 				dcd_byte  <= 1'b0;
 				dcd_last  <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
 
 				if (next_insn[4:0] >= NCE)
 				begin
@@ -636,8 +677,10 @@ module	spicpu #(
 				imm_count <= next_insn[4:0] + 1;
 				end
 			// }}}
-			{ CMD_LAST,  1'b? }:
+			{ CMD_LAST,  1'b? }: begin
+				{ dcd_keep, dcd_send } <= 2'b00;
 				{ dcd_valid, dcd_last } <= 2'b01; // LAST insn
+				end
 			CMD_HALT[4:1]: begin	// WAIT, HALT
 				// {{{
 				dcd_valid  <= (dcd_active);
@@ -645,6 +688,7 @@ module	spicpu #(
 				dcd_active <= 1'b0;
 				dcd_byte   <= 1'b0;
 				dcd_last   <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
 
 				// { r_stopped, r_wait } <= { !next_insn[4],
 				//				next_insn[4] };
@@ -659,6 +703,7 @@ module	spicpu #(
 				dcd_valid <= dcd_active;
 				dcd_keep  <= 1'b0;
 				dcd_byte  <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
 				end
 				// }}}
 			CMD_TARGET[4:1]: begin // TARGET || JUMP
@@ -668,6 +713,7 @@ module	spicpu #(
 				dcd_active <= 1'b0;
 				dcd_byte   <= 1'b0;
 				dcd_last   <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
 
 				if (dcd_active)
 				begin
@@ -679,10 +725,13 @@ module	spicpu #(
 				// {{{
 				dcd_valid  <= 1'b0;
 				dcd_channel<=  next_insn[LGNCHAN-1:0];
+				{ dcd_keep, dcd_send } <= 2'b00;
 				end
 				// }}}
-			CMD_NOOP: dcd_valid <= 1'b0;
-			default: dcd_valid <= 1'b0;
+			CMD_NOOP: // dcd_valid <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
+			default:
+				{ dcd_valid, dcd_keep, dcd_send } <= 3'b00;
 			endcase
 
 			if (next_illegal)
@@ -692,6 +741,7 @@ module	spicpu #(
 				dcd_active <= 1'b0;
 				dcd_csn    <= -1;
 				dcd_byte   <= 1'b0;
+				{ dcd_keep, dcd_send } <= 2'b00;
 			end
 			// }}}
 		end
@@ -720,10 +770,11 @@ module	spicpu #(
 
 	// Offers a simple bit-banging interface, should it be required
 	generate if (OPT_MANUAL)
-	begin : GEN_MANUAL;
+	begin : GEN_MANUAL
 		// {{{
 		reg			r_manual, r_sck, r_mosi;
 		reg	[NCE-1:0]	r_csn;
+		reg	[7:0]		r_data;
 
 		// r_manual
 		// {{{
@@ -771,10 +822,17 @@ module	spicpu #(
 		end
 		// }}}
 
+		always @(posedge i_clk)
+		if (OPT_LOWPOWER && i_reset)
+			r_data <= 8'h0;
+		else if ((!M_AXIS_TVALID || M_AXIS_TREADY) && set_tvalid)
+			r_data <= { spi_srin, miso };
+
 		assign	manual_mode = r_manual;
 		assign	manual_csn  = r_csn;
 		assign	manual_sck  = r_sck;
 		assign	manual_mosi = r_mosi;
+		assign	manual_data = r_data;
 		// }}}
 	end else begin : NO_MANUAL_CONTROL
 		// {{{
@@ -860,10 +918,10 @@ module	spicpu #(
 		if (dcd_valid && !spi_stall)
 		begin
 			o_spi_csn  <= dcd_csn;
-			spi_active <= dcd_active;
+			spi_active <= dcd_active && (dcd_keep || dcd_send);
 		end
 
-		if (r_manual)
+		if (manual_mode)
 			o_spi_csn <= manual_csn;
 	end
 
@@ -883,13 +941,13 @@ module	spicpu #(
 	if (i_reset)
 		o_spi_sck <= DEF_CPOL;
 	else begin
-		if (!spi_stall)
+		if (!spi_stall || r_stopped)
 			o_spi_sck <= DEF_CPOL;
-		else if (spi_ckedge && (!M_AXIS_TVALID || M_AXIS_TREADY
-				|| !spi_keep || !spi_active || spi_count > 1))
+		else if (spi_ckedge && spi_active && (!M_AXIS_TVALID || M_AXIS_TREADY
+				|| !spi_keep || spi_count > 1))
 			o_spi_sck <= !o_spi_sck;
 
-		if (r_manual)
+		if (manual_mode)
 			o_spi_sck <= manual_sck;
 	end
 	// }}}
@@ -905,7 +963,7 @@ module	spicpu #(
 		else if (spi_ckedge && (o_spi_sck ^ DEF_CPOL))
 			{ o_spi_mosi, spi_srout } <= { spi_srout, 1'b0 };
 
-		if (r_manual)
+		if (manual_mode)
 			o_spi_mosi <= manual_mosi;
 	end
 	// }}}
@@ -951,7 +1009,7 @@ module	spicpu #(
 	//
 
 	assign	set_tvalid = spi_keep && spi_active && spi_ckedge
-				&& spi_count == 1 && !r_manual;
+				&& spi_count == 1 && !manual_mode;
 
 	// M_AXIS_TVALID
 	// {{{
