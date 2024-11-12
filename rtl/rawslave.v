@@ -95,7 +95,7 @@ module rawslave #(
 	// Registers used in the SPI clock domain
 	// {{{
 	reg	[2:0]	spi_bitcount, spi_bitcount_n;
-	reg		spi_rdreq, spi_frame;
+	reg		spi_rdreq;
 	reg	[7:0]	spi_byte, xck_oreg;
 	reg	[6:0]	spi_sreg;
 	reg		xck_stb;
@@ -198,7 +198,7 @@ module rawslave #(
 	// {{{
 	reg		last_spi_rd, last_spi_stb;
 	reg		sync_spi_rd, sync_spi_stb, sync_spi_frame;
-	reg		sync_rd_pipe, sync_stb_pipe, sync_frame_pipe;
+	reg [NFF-2:0]	sync_rd_pipe, sync_stb_pipe, sync_frame_pipe;
 	wire		pre_stb;
 	// }}}
 
